@@ -22,6 +22,7 @@ from transformers import (
 )
 
 from utils.config import TaptConfig
+from utils.logging import install_rounded_logging
 
 
 def run_tapt(backbone_id: str, unlabeled_texts: list[str], out_dir: str, config: TaptConfig, base_seed: int = 42) -> str:
@@ -53,6 +54,7 @@ def run_tapt(backbone_id: str, unlabeled_texts: list[str], out_dir: str, config:
         report_to=[],
     )
     trainer = Trainer(model=model, args=args, train_dataset=dataset, data_collator=collator)
+    install_rounded_logging(trainer)
     trainer.train()
 
     model.save_pretrained(out_dir)
