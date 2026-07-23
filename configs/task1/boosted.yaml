@@ -1,0 +1,54 @@
+# Task 1 boosted: TAPT + Asymmetric Loss + discourse cues + per-label threshold tuning
+# + multi-seed/multi-backbone probability-averaging ensemble. Ported from
+# Daleel2026_Task1_Encoder_v2_Boosted.ipynb (all hyperparameters here match that
+# notebook's actual values, verified against the notebook source).
+task: task1
+variant: boosted
+backbones:
+  - CAMeL-Lab/bert-base-arabic-camelbert-mix
+  - UBC-NLP/MARBERTv2
+seeds: [42, 123]
+output_dir: outputs/task1_boosted
+
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  loss: asymmetric
+  asl_gamma_pos: 1.0
+  asl_gamma_neg: 4.0
+  asl_clip: 0.05
+  gradient_checkpointing: true
+
+training:
+  epochs: 8
+  per_device_batch_size: 4
+  per_device_eval_batch_size: 8
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 0
+
+ensembling:
+  enabled: true
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Set enabled: true and team_name to package outputs/task1_boosted/task_1.jsonl into
+# a "{team_name}_{training_setting}.zip" submission at the end of the run.
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: closed

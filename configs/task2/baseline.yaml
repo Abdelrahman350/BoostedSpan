@@ -1,0 +1,47 @@
+# Task 2 baseline: single backbone, single seed, plain softmax token classification
+# (no CRF), no TAPT/cues/ensembling. Decode uses independent per-token argmax with a
+# "dangling I-tag recovers as B-tag" heuristic (postprocessing/spans.py's
+# decode_bio_greedy). Written from CLAUDE.md section 7's prose spec -- no source
+# notebook for this variant exists; only boosted_crf and later variants were validated.
+task: task2
+variant: baseline
+backbones:
+  - CAMeL-Lab/bert-base-arabic-camelbert-mix
+seeds: [42]
+output_dir: outputs/task2_baseline
+
+tapt:
+  enabled: false
+
+model:
+  max_seq_len: 512
+  stride: 64
+  use_crf: false
+  gradient_checkpointing: false
+
+training:
+  epochs: 10
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+
+data:
+  discourse_cues: false
+  jitter_augment: 0
+
+ensembling:
+  enabled: false
+  weighting: uniform
+
+wandb:
+  enabled: false
+
+# Set enabled: true and team_name to package outputs/task2_baseline/task_2.jsonl into
+# a "{team_name}_{training_setting}.zip" submission at the end of the run.
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: closed

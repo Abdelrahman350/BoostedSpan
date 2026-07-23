@@ -1,0 +1,58 @@
+{
+  "name": "Daleel",
+  "dockerFile": "Dockerfile",
+  "hostRequirements": {
+    "gpu": true
+  },
+  "workspaceFolder": "/home/mount/Repositories/${localWorkspaceFolderBasename}",
+  "mounts": [
+    "source=${localWorkspaceFolder}/../../,target=/home/mount,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/../../.claude-code-state-${localWorkspaceFolderBasename},target=/home/abdelrahman/.claude,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/../../.uv-cache-${localWorkspaceFolderBasename},target=/home/abdelrahman/.local/share/uv,type=bind,consistency=cached",
+  ],
+  "initializeCommand": "mkdir -p ${localWorkspaceFolder}/../../.claude-code-state-${localWorkspaceFolderBasename} && mkdir -p ${localWorkspaceFolder}/../../.uv-cache-${localWorkspaceFolderBasename}",
+  "shutdownAction": "stopContainer",
+  "containerUser": "abdelrahman",
+  "remoteUser": "abdelrahman",
+  "runArgs": [
+    "--name=${localWorkspaceFolderBasename}",
+    "--hostname=Daleel",
+    "--shm-size=3gb",
+    "--cpus=10",
+    "--memory=10g"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:4.0.0": {}
+  },
+  "containerEnv": {
+    "PYTHONPATH": "/home/mount/Repositories/${localWorkspaceFolderBasename}:${containerEnv:PYTHONPATH}",
+    "HF_HOME": "/home/mount/.cache/huggingface",
+    "TRANSFORMERS_CACHE": "/home/mount/.cache/huggingface/hub",
+    "AWS_PROFILE": "mfa",
+    "NVIDIA_VISIBLE_DEVICES": "all",
+    "NVIDIA_DRIVER_CAPABILITIES": "compute,utility"
+  },
+  "postCreateCommand": "cd /home/mount/Repositories/${localWorkspaceFolderBasename} && uv sync --extra dev",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "ms-toolsai.jupyter-keymap",
+        "ms-toolsai.jupyter-renderers",
+        "ms-python.black-formatter",
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "ms-python.debugpy",
+        "chrisltd.semgrep-vscode",
+        "aquasecurity.trivy",
+        "ms-azuretools.vscode-containers",
+        "docker.docker",
+        "ms-vscode.cpptools-extension-pack",
+        "Anthropic.claude-code"
+      ]
+    }
+  }
+}

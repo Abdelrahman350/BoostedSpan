@@ -1,0 +1,70 @@
+# Task 2 enhanced_track_b: separate two-stage pipeline (Stage A boundary tagger,
+# Stage B span-type classifier), single backbone/seed deliberately -- this answers
+# "does decoupling boundary-finding from typing help at all" before investing in
+# scaling it to a full backbone/seed grid. Needs two distinct hyperparameter sets, so
+# training.stage_a/stage_b are used instead of the flat training block (the only one
+# of the six configs that needs this nested schema -- see utils/config.py).
+task: task2
+variant: enhanced_track_b
+backbones:
+  - CAMeL-Lab/bert-base-arabic-camelbert-mix
+seeds: [42]
+output_dir: outputs/task2_enhanced_track_b
+
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  stride: 64
+  use_crf: true
+  gradient_checkpointing: true
+
+training:
+  # Flat fields are unused for this variant (train_task2.py falls back to
+  # training.stage_a/stage_b explicitly) but kept populated so the schema stays valid
+  # if this config is ever read by tooling that expects the flat fields.
+  epochs: 10
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  stage_a:
+    epochs: 10
+    per_device_batch_size: 4
+    gradient_accumulation_steps: 4
+    learning_rate: 3.0e-5
+    weight_decay: 0.01
+    warmup_ratio: 0.1
+    save_best_checkpoint: true
+  stage_b:
+    epochs: 8
+    per_device_batch_size: 8
+    gradient_accumulation_steps: 2
+    learning_rate: 2.0e-5
+    weight_decay: 0.01
+    warmup_ratio: 0.1
+    save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 0
+
+ensembling:
+  enabled: false
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Set enabled: true and team_name to package outputs/task2_enhanced_track_b/task_2.jsonl
+# into a "{team_name}_{training_setting}.zip" submission at the end of the run.
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: closed

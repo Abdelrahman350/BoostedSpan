@@ -1,0 +1,52 @@
+# Task 2 enhanced_track_a: boosted_crf + boundary-jitter augmentation + weighted
+# ensemble voting (weighted by each run's internal validation partial-overlap F1) +
+# postprocessing pipeline (strip_non_content_spans -> snap_to_word_boundary ->
+# merge_adjacent_same_label). Ported from Daleel2026_Task2_Encoder_v3_Enhanced.ipynb;
+# all hyperparameters verified against that notebook's actual values.
+task: task2
+variant: enhanced_track_a
+backbones:
+  - CAMeL-Lab/bert-base-arabic-camelbert-mix
+  - UBC-NLP/MARBERTv2
+seeds: [42, 123]
+output_dir: outputs/task2_enhanced_track_a
+
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  stride: 64
+  use_crf: true
+  gradient_checkpointing: true
+
+training:
+  epochs: 10
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 2
+
+ensembling:
+  enabled: true
+  weighting: internal_f1
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Set enabled: true and team_name to package outputs/task2_enhanced_track_a/task_2.jsonl
+# into a "{team_name}_{training_setting}.zip" submission at the end of the run.
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: closed
