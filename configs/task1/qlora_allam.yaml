@@ -1,0 +1,66 @@
+# Task 1 qlora_allam: QLoRA fine-tuning of ALLaM-7B-Instruct-preview, a generative
+# alternative to the encoder-classification pipeline (see train_task1_generative.py).
+# Scores P(yes) per label via next-token logits (rank-classification), NOT free-form
+# JSON generation -- reuses train_task1.py's existing threshold-tuning/ensembling
+# unmodified. EXPERIMENTAL: never run end-to-end against the real 7B model in this
+# repo yet -- the QLoRA mechanism (4-bit load + LoRA + forward/backward) was verified
+# to work on this hardware using a small stand-in model, but VRAM fit and the yes/no
+# token-id assumption in score_labels_via_logits both need verification against the
+# real ALLaM-7B-Instruct-preview before trusting results. See train_task1_generative.py.
+task: task1
+variant: qlora_allam
+backbones:
+  - humain-ai/ALLaM-7B-Instruct-preview
+seeds: [42]
+output_dir: outputs/task1_qlora_allam
+
+# MLM continuation doesn't apply to a causal instruction-tuned decoder -- this MUST
+# stay false, train_task1_generative.py raises if it's true.
+tapt:
+  enabled: false
+
+model:
+  max_seq_len: 1024
+  gradient_checkpointing: true
+
+training:
+  epochs: 3
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  # No per-epoch best-checkpoint selection for this variant (see
+  # train_task1_generative.py's train_one_qlora_run) -- always saves the final epoch.
+  save_best_checkpoint: false
+
+data:
+  discourse_cues: true
+  jitter_augment: 0
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: float16  # not bfloat16 -- T4 is Turing, no native bf16 tensor cores
+  bnb_4bit_use_double_quant: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+
+ensembling:
+  enabled: false
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Set enabled: true and team_name to package outputs/task1_qlora_allam/task_1.jsonl
+# into a "{team_name}_{training_setting}.zip" submission at the end of the run.
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: both

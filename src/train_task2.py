@@ -46,6 +46,14 @@ from data.loading import (
 from evaluation.scoring import corpus_partial_overlap_f1, score_task2
 from evaluation.submission import write_submission_zip
 from models.crf_tagger import TokenClassifierWithCRF
+from models.span_scorer import (
+    SpanScorerModel,
+    SpanScorerTrainer,
+    build_span_scorer_examples,
+    make_span_scorer_collate_fn,
+    predict_span_scorer_paragraph,
+    span_class_weights,
+)
 from models.span_type_classifier import (
     ClassWeightedSpanTrainer,
     SpanTypeClassifier,
@@ -62,7 +70,7 @@ from postprocessing.spans import (
 )
 from pretraining.tapt import run_tapt
 from text.cues import build_input_text
-from utils.config import Config, load_config
+from utils.config import Config, SpanScorerConfig, load_config
 from utils.logging import install_rounded_logging
 from utils.tracking import RunTracker, make_trainer_callback
 
@@ -79,6 +87,17 @@ def compute_token_classification_metrics(eval_pred) -> dict:
     """Token-level macro F1 over BIO tag ids (ignoring -100 padding), via simple
     argmax -- not the CRF's Viterbi decode and not the official partial-overlap span
     metric. Works for both the 13-tag (Track A) and 3-tag (Track B Stage A) schemes."""
+    logits, labels = eval_pred
+    preds = np.argmax(logits, axis=-1)
+    mask = labels != -100
+    return {"f1_macro": f1_score(labels[mask], preds[mask], average="macro", zero_division=0)}
+
+
+def compute_span_scorer_metrics(eval_pred) -> dict:
+    """Candidate-level macro F1 over the 7-way (null + 6 labels) classification,
+    ignoring -100 padded candidate slots -- same shape as compute_token_classification_metrics,
+    just over enumerated candidates instead of BIO tag positions. A per-epoch proxy
+    for best-checkpoint selection only, not the official partial-overlap span metric."""
     logits, labels = eval_pred
     preds = np.argmax(logits, axis=-1)
     mask = labels != -100
@@ -375,7 +394,8 @@ def _write_and_score(val_spans, dev_spans, split, dev_in, config: Config, data_d
             task_file_stem="task_2",
             team_name=config.submission.team_name,
             training_setting=config.submission.training_setting,
-            output_dir=config.output_dir,
+            output_dir=f"submissions/{config.submission.phase}",
+            run_label=f"{config.task}_{config.variant}",
         )
 
     tracker = RunTracker(config.wandb, f"{config.task}_{config.variant}_ensemble", run_config={"variant": config.variant})
@@ -398,6 +418,125 @@ def run_track_a_pipeline(config: Config, split, dev_in: list[dict], data_dir: st
             run_output_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}"
             run_results.append(train_task2_model(backbone_id, seed, config, tapt_cache_dir, split, dev_in, run_output_dir))
     ensemble_track_a(run_results, split, dev_in, config, data_dir, postprocess=postprocess)
+
+
+# --- span_scorer: enumerate-and-classify alternative to BIO+CRF, feeds into the SAME
+# Track A ensembling/scoring glue (Task2RunResult / ensemble_track_a / _write_and_score)
+# since its output is the same generic span-dict shape ---
+
+
+def train_span_scorer_model(
+    backbone_id: str, seed: int, config: Config, tapt_cache_dir: str, split, dev_in: list[dict], output_dir: str
+) -> Task2RunResult:
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    sc_cfg = config.span_scorer or SpanScorerConfig()
+
+    if config.tapt.enabled:
+        safe_name = backbone_id.replace("/", "__")
+        unlabeled_texts = [build_input_text(r["text"], r["type"], config.data.discourse_cues) for r in split.task1_train]
+        unlabeled_texts += [build_input_text(r["text"], r["type"], config.data.discourse_cues) for r in dev_in]
+        checkpoint = run_tapt(backbone_id, unlabeled_texts, f"{tapt_cache_dir}/{safe_name}", config.tapt, base_seed=seed)
+    else:
+        checkpoint = backbone_id
+
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+    model = SpanScorerModel(checkpoint)
+    if config.model.gradient_checkpointing:
+        model.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    model.to("cuda" if torch.cuda.is_available() else "cpu")
+
+    rng = random.Random(seed)
+    train_examples = build_span_scorer_examples(
+        tokenizer, split.task2_train, config.model.max_seq_len, config.model.stride, sc_cfg.max_span_width,
+        sc_cfg.negative_sampling_ratio, sc_cfg.hard_negative_fraction, config.data.discourse_cues, rng=rng,
+    )
+    train_ds = Dataset.from_list(train_examples)
+    val_examples = build_span_scorer_examples(
+        tokenizer, split.task2_val, config.model.max_seq_len, config.model.stride, sc_cfg.max_span_width,
+        sc_cfg.negative_sampling_ratio, sc_cfg.hard_negative_fraction, config.data.discourse_cues, rng=rng,
+    )
+    val_ds = Dataset.from_list(val_examples)
+    collator = make_span_scorer_collate_fn(tokenizer)
+    class_weights = span_class_weights(split.task2_train, sc_cfg.class_weight_clip)
+
+    run_name = f"{config.task}_{config.variant}_{backbone_id.replace('/', '__')}_{seed}"
+    tracker = RunTracker(config.wandb, run_name, run_config={"backbone": backbone_id, "seed": seed, "variant": config.variant})
+
+    save_best = config.training.save_best_checkpoint
+    args = TrainingArguments(
+        output_dir=output_dir,
+        num_train_epochs=config.training.epochs,
+        per_device_train_batch_size=config.training.per_device_batch_size,
+        gradient_accumulation_steps=config.training.gradient_accumulation_steps,
+        learning_rate=config.training.learning_rate,
+        weight_decay=config.training.weight_decay,
+        warmup_ratio=config.training.warmup_ratio,
+        eval_strategy="epoch" if save_best else "no",
+        save_strategy="epoch" if save_best else "no",
+        save_total_limit=1 if save_best else None,
+        load_best_model_at_end=save_best,
+        metric_for_best_model="f1_macro" if save_best else None,
+        greater_is_better=True if save_best else None,
+        logging_steps=20,
+        remove_unused_columns=False,
+        fp16=torch.cuda.is_available(),
+        seed=seed,
+        report_to=[],
+    )
+    trainer = SpanScorerTrainer(
+        model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds if save_best else None, data_collator=collator,
+        class_weights=class_weights, compute_metrics=compute_span_scorer_metrics if save_best else None,
+        callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
+    )
+    install_rounded_logging(trainer)
+    trainer.train()
+
+    if save_best:
+        # SpanScorerModel is a bare nn.Module, not a HF PreTrainedModel -- same
+        # state_dict-only caveat as TokenClassifierWithCRF (see train_task2_model).
+        checkpoint_dir = f"{output_dir}/checkpoint"
+        trainer.save_model(checkpoint_dir)
+        tokenizer.save_pretrained(checkpoint_dir)
+
+    model.eval()
+    val_spans = {
+        r["paragraph_id"]: predict_span_scorer_paragraph(
+            r["text"], r["type"], model, tokenizer, sc_cfg.max_span_width, config.model.max_seq_len, config.model.stride,
+            config.data.discourse_cues, sc_cfg.decode_score_threshold, sc_cfg.decode_overlap_iou_threshold,
+        )
+        for r in split.task2_val
+    }
+    dev_spans = {
+        r["paragraph_id"]: predict_span_scorer_paragraph(
+            r["text"], r["type"], model, tokenizer, sc_cfg.max_span_width, config.model.max_seq_len, config.model.stride,
+            config.data.discourse_cues, sc_cfg.decode_score_threshold, sc_cfg.decode_overlap_iou_threshold,
+        )
+        for r in dev_in
+    }
+
+    gold_val_by_id = {r["paragraph_id"]: r["labels"] for r in split.task2_val}
+    internal_f1 = corpus_partial_overlap_f1(gold_val_by_id, val_spans)
+    tracker.log({"internal_partial_overlap_f1": internal_f1})
+    tracker.finish()
+
+    del model, trainer
+    gc.collect()
+    torch.cuda.empty_cache()
+    return Task2RunResult(val_spans=val_spans, dev_spans=dev_spans, internal_f1=internal_f1)
+
+
+def run_span_scorer_pipeline(config: Config, split, dev_in: list[dict], data_dir: str) -> None:
+    tapt_cache_dir = "outputs/tapt_checkpoints"
+    run_results = []
+    for backbone_id in config.backbones:
+        for seed in config.seeds:
+            safe_name = backbone_id.replace("/", "__")
+            run_output_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}"
+            run_results.append(train_span_scorer_model(backbone_id, seed, config, tapt_cache_dir, split, dev_in, run_output_dir))
+    ensemble_track_a(run_results, split, dev_in, config, data_dir, postprocess=True)
 
 
 # --- Track B: separate two-stage pipeline, own functions, own GPU cleanup per stage ---
@@ -596,6 +735,8 @@ def main() -> None:
         run_track_b(config, split, dev_in, args.data_dir)
     elif config.variant in ("baseline", "boosted_crf", "enhanced_track_a"):
         run_track_a_pipeline(config, split, dev_in, args.data_dir)
+    elif config.variant == "span_scorer":
+        run_span_scorer_pipeline(config, split, dev_in, args.data_dir)
     else:
         raise ValueError(f"Unknown variant: {config.variant!r}")
 

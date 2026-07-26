@@ -18,12 +18,13 @@ reintroducing).
 src/
 ├── data/            # loading, shared train/val split, boundary-jitter augmentation
 ├── text/            # discourse-marker cues, domain-prefix input composition
-├── models/          # losses, CRF tagger, span-type classifier
+├── models/          # losses, CRF tagger, span-type classifier, span-scorer (enumerate-and-classify)
 ├── pretraining/      # task-adaptive MLM pretraining (TAPT)
 ├── postprocessing/   # span decode/cleanup, ensemble voting
 ├── evaluation/        # thin wrappers around the organizers' scorers, submission zip packaging
 ├── utils/             # config loading, W&B tracking, log rounding
 ├── train_task1.py
+├── train_task1_generative.py   # QLoRA ALLaM-7B rank-classification variant
 └── train_task2.py
 ```
 
@@ -51,6 +52,10 @@ scripts/fetch_data.sh --force  # remove data/raw/Daleel2026 and re-clone
 ```bash
 uv run python -m train_task1 --config configs/task1/baseline.yaml
 uv run python -m train_task1 --config configs/task1/boosted.yaml
+
+# EXPERIMENTAL -- QLoRA ALLaM-7B, rank-classification (see "New architectural
+# variants" below). Not yet validated end-to-end against the real 7B model.
+uv run python -m train_task1_generative --config configs/task1/qlora_allam.yaml
 ```
 
 ### Training — Task 2
@@ -60,6 +65,11 @@ uv run python -m train_task2 --config configs/task2/baseline.yaml
 uv run python -m train_task2 --config configs/task2/boosted_crf.yaml
 uv run python -m train_task2 --config configs/task2/enhanced_track_a.yaml
 uv run python -m train_task2 --config configs/task2/enhanced_track_b.yaml
+
+# EXPERIMENTAL -- enumerate-and-classify span scoring (see "New architectural
+# variants" below). Verified end-to-end on a real (short) training run; not yet
+# compared against boosted_crf/enhanced_track_a on a full run.
+uv run python -m train_task2 --config configs/task2/span_scorer.yaml
 ```
 
 ### Training — optional flags
@@ -161,7 +171,75 @@ checkpoint saving entirely, matching the original save_strategy="no" behavior.
 
 Set `submission.enabled: true` and `submission.team_name` in a config to package the
 run's `dev_in` predictions into a CodaBench-style submission zip at the end of
-training: a single `task_1.jsonl`/`task_2.jsonl` at the zip root, named
-`{team_name}_{training_setting}.zip`, with contents and integrity verified
-immediately after writing. Off by default — flip it on per-config when you're ready
-to submit.
+training: a single `task_1.jsonl`/`task_2.jsonl` at the zip root, with contents and
+integrity verified immediately after writing. Off by default — flip it on per-config
+when you're ready to submit.
+
+Every `train_*.py` entrypoint writes its zip to **`submissions/dev/`** (Dev phase,
+predictions on the 217-row `dev_in.jsonl`), named
+`{task}_{variant}_{team_name}_{training_setting}.zip` — e.g.
+`submissions/dev/task2_boosted_crf_Nu_Analytics_both.zip`. The `{task}_{variant}`
+prefix is what keeps every variant's zip uniquely named inside the same shared
+directory; without it, every config would produce an identically-named zip and it'd
+be easy to upload the wrong one.
+
+`predict_eval.py` (below) writes to **`submissions/eval/`** instead, with the same
+naming convention — the two directories exist specifically so a 217-row Dev
+submission and a 213-row Evaluation submission are never one accidental drag-and-drop
+away from each other.
+
+### Predicting on a different input file (`predict_eval.py`)
+
+Every `train_*.py` entrypoint only ever predicts on `dev_in.jsonl`, inside the same
+process that just trained the model. `predict_eval.py` reloads an **already-trained**
+checkpoint (no retraining) and predicts on an arbitrary input file with the same
+`{paragraph_id, text, type}` schema — built for the shared task's separate
+Evaluation-phase test set (`data/test/test_in.jsonl`, 213 rows, distinct from the
+217-row `dev_in.jsonl`; re-run `scripts/fetch_data.sh --force` if your clone predates
+this file being added upstream).
+
+```bash
+uv run python -m predict_eval --config configs/task1/qlora_allam.yaml --team-name Nu_Analytics --training-setting both
+uv run sanad-predict-eval --config configs/task2/boosted_crf.yaml --team-name Nu_Analytics --training-setting both
+```
+
+Works for every variant across both tasks — encoder classifiers, the QLoRA/PEFT
+generative model, CRF taggers, the two-stage `enhanced_track_b` pipeline, and
+`span_scorer` — by reconstructing each model from the same base checkpoint training
+started from (`outputs/tapt_checkpoints/{backbone}/` if TAPT was used, otherwise the
+raw backbone id) and loading the trained weights on top; see the module docstring for
+why custom (non-`PreTrainedModel`) checkpoints need this two-step reload instead of a
+plain `.from_pretrained()`. Optional `--test-file`/`--data-dir` override the input
+file and data directory; `--config`, `--team-name` are required.
+
+### New architectural variants (experimental)
+
+Two additional variants beyond CLAUDE.md's original scope, aimed at higher-ceiling
+performance gains rather than incremental tuning:
+
+**Task 2 `span_scorer`** (`configs/task2/span_scorer.yaml`, `src/models/span_scorer.py`) —
+an enumerate-and-classify span scorer replacing `boosted_crf`'s BIO+CRF decode. Scores
+every candidate `(start, end)` span up to `span_scorer.max_span_width` tokens directly
+(48 by default, chosen empirically against `train_task_2.jsonl`'s real span-length
+distribution — excludes ~2% of gold spans), rather than decoding one BIO tag sequence.
+Unlike BIO, it can represent the ~1% of paragraphs with overlapping gold spans, and
+optimizes more directly for the official partial-overlap F1 metric. Reuses the same
+`postprocess_spans`/`ensemble_decode_spans`/`write_submission_zip`/`score_task2`
+pipeline as every other Task 2 variant — its output is plain `{label, start_offset,
+end_offset}` span dicts. Verified end-to-end on a real (short) training run; not yet
+compared against `boosted_crf`/`enhanced_track_a` on a full run — check
+`corpus_partial_overlap_f1` (and then the official scorer) before trusting it over the
+proven CRF path.
+
+**Task 1 `qlora_allam`** (`configs/task1/qlora_allam.yaml`, `src/train_task1_generative.py`) —
+QLoRA (4-bit NF4) fine-tuning of `ALLaM-7B-Instruct-preview`, a generative alternative
+to the encoder-classification pipeline. Uses **rank-classification** (scores `P(yes)`
+per label via next-token logits) rather than free-form JSON generation, specifically
+so `train_task1.py`'s existing per-label threshold sweep and probability-averaging
+ensemble work unmodified. TAPT is unsupported for this variant (the entrypoint raises
+if `tapt.enabled: true`). The QLoRA mechanism (4-bit load + LoRA + forward/backward)
+was verified working on this hardware using a small stand-in causal LM; **VRAM fit
+against the real 7B model and the yes/no token-id assumption in
+`score_labels_via_logits` both still need verification against the real
+`ALLaM-7B-Instruct-preview` tokenizer/weights** before trusting results — see the
+docstrings in `train_task1_generative.py` for the exact open risks.

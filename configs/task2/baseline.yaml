@@ -42,6 +42,6 @@ wandb:
 # Set enabled: true and team_name to package outputs/task2_baseline/task_2.jsonl into
 # a "{team_name}_{training_setting}.zip" submission at the end of the run.
 submission:
-  enabled: false
-  team_name: ""
-  training_setting: closed
+  enabled: true
+  team_name: Nu_Analytics
+  training_setting: both

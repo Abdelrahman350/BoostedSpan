@@ -14,6 +14,9 @@ dependencies = [
     "pyyaml>=6.0",
     "wandb>=0.18",
     "numpy>=1.26,<2",
+    "peft>=0.19.1",
+    "bitsandbytes>=0.50.0",
+    "sentencepiece>=0.2.2",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +25,8 @@ dev = ["pytest>=8.0"]
 [project.scripts]
 sanad-train-task1 = "train_task1:main"
 sanad-train-task2 = "train_task2:main"
+sanad-train-task1-generative = "train_task1_generative:main"
+sanad-predict-eval = "predict_eval:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -39,6 +44,8 @@ include = [
     "src/utils/**",
     "src/train_task1.py",
     "src/train_task2.py",
+    "src/train_task1_generative.py",
+    "src/predict_eval.py",
 ]
 
 [tool.pytest.ini_options]

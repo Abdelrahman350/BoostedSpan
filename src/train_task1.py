@@ -238,7 +238,8 @@ def ensemble_and_score(
             task_file_stem="task_1",
             team_name=config.submission.team_name,
             training_setting=config.submission.training_setting,
-            output_dir=config.output_dir,
+            output_dir=f"submissions/{config.submission.phase}",
+            run_label=f"{config.task}_{config.variant}",
         )
 
     tracker = RunTracker(config.wandb, f"{config.task}_{config.variant}_ensemble", run_config=_flatten_config(config))

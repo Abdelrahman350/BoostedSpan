@@ -83,14 +83,64 @@ class WandbConfig:
 
 
 @dataclass
+class SpanScorerConfig:
+    # Only populated for task2's span_scorer variant -- an enumerate-and-classify
+    # alternative to BIO+CRF (see models/span_scorer.py). max_span_width=48 tokens
+    # excludes ~2% of real gold spans (empirically verified against train_task_2.jsonl
+    # via the real tokenizer: p95=39 tok, p99=57 tok, p100=126 tok -- 48 was chosen as
+    # the coverage/candidate-count tradeoff point, not a guess).
+    max_span_width: int = 48
+    negative_sampling_ratio: float = 10.0
+    hard_negative_fraction: float = 0.5
+    # Higher than Task 1's 8x clip (models/losses.py) -- span-level CO/ST imbalance is
+    # far more extreme (~35x vs AS) than Task 1's paragraph-level imbalance.
+    class_weight_clip: float = 20.0
+    decode_score_threshold: float = 0.5
+    decode_overlap_iou_threshold: float = 0.3
+
+
+@dataclass
+class QuantizationConfig:
+    # Only populated for task1's qlora_allam variant. fp16, not bfloat16: the T4 this
+    # repo is sized for is Turing architecture with no native bf16 tensor cores --
+    # bf16 is QLoRA's more common default on newer GPUs, but would be a real
+    # hardware mismatch here.
+    load_in_4bit: bool = True
+    bnb_4bit_quant_type: str = "nf4"
+    bnb_4bit_compute_dtype: str = "float16"
+    bnb_4bit_use_double_quant: bool = True
+
+
+@dataclass
+class LoraConfigFields:
+    r: int = 16
+    alpha: int = 32
+    dropout: float = 0.05
+    target_modules: list[str] = field(default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"])
+
+
+@dataclass
 class SubmissionConfig:
     # Off by default: packaging a CodaBench submission zip is an explicit opt-in step,
     # not something every training run should produce. When enabled, team_name is
     # required (validated in evaluation/submission.py, not here, since an empty
     # string is a valid YAML default and shouldn't fail config loading itself).
+    #
+    # training_setting is NOT the closed/open-track distinction (that's CLAUDE.md
+    # section 2's separate concept, and this repo is closed-track-only regardless).
+    # It's CodaBench's "which domain(s) did you train on" tag, read from the zip
+    # filename -- every real leaderboard submission uses "both" (our train/val split
+    # always spans both domains, see data/loading.py's build_shared_split), so that's
+    # the correct default. Never use "closed" here -- that was a naming mix-up.
     enabled: bool = False
     team_name: str = ""
-    training_setting: str = "closed"
+    training_setting: str = "both"
+    # "dev" for every train_*.py entrypoint (predicts on dev_in.jsonl); predict_eval.py
+    # overrides this to "eval" for Evaluation-phase (test_in.jsonl) runs. Determines
+    # which submissions/{phase}/ subdirectory write_submission_zip writes into -- keeps
+    # dev-phase (217-row) and eval-phase (213-row) zips from ever colliding on the same
+    # filename, which caused real upload mix-ups before this existed.
+    phase: str = "dev"
 
 
 @dataclass
@@ -107,6 +157,9 @@ class Config:
     ensembling: EnsemblingConfig = field(default_factory=EnsemblingConfig)
     wandb: WandbConfig = field(default_factory=WandbConfig)
     submission: SubmissionConfig = field(default_factory=SubmissionConfig)
+    span_scorer: Optional[SpanScorerConfig] = None
+    quantization: Optional[QuantizationConfig] = None
+    lora: Optional[LoraConfigFields] = None
 
 
 def _build(cls: Type[T], data: Any, path: str) -> T:

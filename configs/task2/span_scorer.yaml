@@ -1,0 +1,74 @@
+# Task 2 span_scorer: enumerate-and-classify span scoring, an alternative to
+# boosted_crf's BIO+CRF decode (see models/span_scorer.py). Scores every candidate
+# (start, end) span up to span_scorer.max_span_width directly, rather than decoding a
+# single BIO tag sequence -- can represent the ~1% of paragraphs with overlapping gold
+# spans that BIO+CRF structurally cannot, and more directly optimizes for the official
+# partial-overlap F1 metric (segment quality, not per-token tag accuracy).
+# EXPERIMENTAL: a new architecture. First full run (2 backbones x 2 seeds, 10 epochs,
+# these hyperparameters) scored Overall F1=0.066 on the official scorer, far below
+# boosted_crf (~0.66+) -- NOT yet competitive. Root cause diagnosed (not a pipeline
+# bug): the model predicts tiny 2-4 char fragments that sit INSIDE real gold spans
+# (high precision on the fragment, near-zero recall of the full span) rather than
+# learning full span extents -- likely needs more epochs, a tuned learning rate/decode
+# threshold, and/or a decode rule less prone to locking in an early small
+# high-confidence fragment via same-label NMS suppression before a correct longer
+# span is considered. Compare internal_f1 (and the official scorer) before trusting
+# this over the proven CRF path; treat as a research direction to keep tuning, not a
+# drop-in replacement yet.
+task: task2
+variant: span_scorer
+backbones:
+  - CAMeL-Lab/bert-base-arabic-camelbert-mix
+  - UBC-NLP/MARBERTv2
+seeds: [42, 123]
+output_dir: outputs/task2_span_scorer
+
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  stride: 64
+  gradient_checkpointing: true
+
+training:
+  epochs: 10
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 0
+
+# max_span_width=48 tokens excludes ~2% of real gold spans (empirically verified
+# against train_task_2.jsonl via the real CAMeLBERT tokenizer: p95=39 tok, p99=57 tok,
+# p100=126 tok -- 48 is the coverage/candidate-count tradeoff point, not a guess).
+span_scorer:
+  max_span_width: 48
+  negative_sampling_ratio: 10.0
+  hard_negative_fraction: 0.5
+  class_weight_clip: 20.0
+  decode_score_threshold: 0.5
+  decode_overlap_iou_threshold: 0.3
+
+ensembling:
+  enabled: true
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Set enabled: true and team_name to package outputs/task2_span_scorer/task_2.jsonl
+# into a "{team_name}_{training_setting}.zip" submission at the end of the run.
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: both
