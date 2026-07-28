@@ -2,11 +2,9 @@
 # alternative to the encoder-classification pipeline (see train_task1_generative.py).
 # Scores P(yes) per label via next-token logits (rank-classification), NOT free-form
 # JSON generation -- reuses train_task1.py's existing threshold-tuning/ensembling
-# unmodified. EXPERIMENTAL: never run end-to-end against the real 7B model in this
-# repo yet -- the QLoRA mechanism (4-bit load + LoRA + forward/backward) was verified
-# to work on this hardware using a small stand-in model, but VRAM fit and the yes/no
-# token-id assumption in score_labels_via_logits both need verification against the
-# real ALLaM-7B-Instruct-preview before trusting results. See train_task1_generative.py.
+# unmodified. VALIDATED: real dev-phase run scored Overall F1=0.851, the best result
+# across both tasks so far. See configs/task1/qlora_yehia.yaml for a GRPO-tuned
+# sibling model (same architecture/tokenizer) worth ensembling with this one.
 task: task1
 variant: qlora_allam
 backbones:

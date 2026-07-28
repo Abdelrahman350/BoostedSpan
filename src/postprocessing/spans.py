@@ -64,6 +64,20 @@ def merge_adjacent_same_label(spans: list[dict], text: str, max_gap: int = 2) ->
     return merged
 
 
+def filter_spans_by_class_rules(spans: list[dict], min_length_per_class: dict[str, int] | None = None) -> list[dict]:
+    """Per-class post-decode filters (currently: minimum character length per label).
+    Values should be grid-searched on OUT-OF-FOLD predictions against the official
+    task2 scorer (evaluation/scoring.py's score_task2), never the internal
+    approximation -- see CLAUDE.md section 8 bug 5. Labels absent from the dict pass
+    through unfiltered."""
+    if not min_length_per_class:
+        return spans
+    return [
+        s for s in spans
+        if (s["end_offset"] - s["start_offset"]) >= min_length_per_class.get(s["label"], 0)
+    ]
+
+
 def postprocess_spans(text: str, spans: list[dict]) -> list[dict]:
     spans = strip_non_content_spans(text, spans)
     snapped = []

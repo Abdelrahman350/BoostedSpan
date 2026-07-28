@@ -273,7 +273,7 @@ def run_task2_track_b_eval(config: Config, split, test_rows: list[dict], eval_co
     gc.collect()
     torch.cuda.empty_cache()
 
-    _write_and_score(val_spans, test_spans, split, test_rows, eval_config, data_dir)
+    _write_and_score(val_spans, test_spans, split.task2_val, test_rows, eval_config, data_dir)
 
 
 def main() -> None:

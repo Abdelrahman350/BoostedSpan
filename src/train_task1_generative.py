@@ -175,7 +175,13 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token  # common gotcha: causal LM tokenizers often lack a dedicated pad token
 
-    model = AutoModelForCausalLM.from_pretrained(backbone_id, quantization_config=bnb_config, device_map={"": 0} if torch.cuda.is_available() else "cpu")
+    # eager attention unconditionally: Gemma2's soft-capping is incompatible with
+    # FlashAttention-2, and eager costs nothing extra for the Llama-family backbones
+    # since this repo never enables flash-attn anyway.
+    model = AutoModelForCausalLM.from_pretrained(
+        backbone_id, quantization_config=bnb_config, device_map={"": 0} if torch.cuda.is_available() else "cpu",
+        attn_implementation="eager",
+    )
     model = prepare_model_for_kbit_training(model)
     model = get_peft_model(
         model,
@@ -194,6 +200,14 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
     run_name = f"{config.task}_{config.variant}_{backbone_id.replace('/', '__')}_{seed}"
     tracker = RunTracker(config.wandb, run_name, run_config={"backbone": backbone_id, "seed": seed, "variant": config.variant})
 
+    # Compute dtype drives which half-precision mode TrainingArguments uses, not just
+    # the 4-bit quantization math -- bnb_4bit_compute_dtype: bfloat16 is only set for
+    # backbones verified bf16-stable on hardware with native bf16 support (e.g. Gemma2's
+    # attention/final-logit soft-capping, which is documented fp16-unstable on
+    # bf16-less/Turing GPUs -- see configs/task1/qlora_fanar.yaml). fp16 remains the
+    # default for everything else (validated on ALLaM/Yehia, both Llama architecture).
+    use_bf16 = quant_cfg.bnb_4bit_compute_dtype == "bfloat16"
+
     # No per-epoch eval_strategy/load_best_model_at_end here, unlike this repo's other
     # variants: "best checkpoint" would need score_labels_via_logits (many per-paragraph
     # forward passes) run inside HF Trainer's per-epoch eval hook, which doesn't fit the
@@ -211,7 +225,8 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
         save_strategy="no",
         logging_steps=20,
         remove_unused_columns=False,
-        fp16=torch.cuda.is_available(),
+        fp16=torch.cuda.is_available() and not use_bf16,
+        bf16=torch.cuda.is_available() and use_bf16,
         seed=seed,
         report_to=[],
     )

@@ -56,6 +56,14 @@ class TrainingConfig:
     # checkpoint is saved to <run_output_dir>/checkpoint. When false, matches the prior
     # behavior: no evaluation during training, nothing saved to disk.
     save_best_checkpoint: bool = True
+    # When set, replaces the single 85/15 split with stratified k-fold CV: the
+    # backbone x seed grid becomes backbone x fold (use a single seed), every row gets
+    # an out-of-fold prediction (persisted for calibration), and fold models are the
+    # ensemble members. None = the original single-split behavior.
+    num_folds: Optional[int] = None
+    # FGM adversarial training on the embedding layer (epsilon ~0.5-1.0 typical for
+    # BERT embeddings; 0 = off). ~2x step time, no extra memory. Encoder paths only.
+    fgm_epsilon: float = 0.0
     # Only populated for task2's enhanced_track_b, which genuinely needs two distinct
     # hyperparameter sets (Stage A boundary tagger vs. Stage B span-type classifier).
     # Every other config leaves these as None and uses the flat fields above.
@@ -67,6 +75,12 @@ class TrainingConfig:
 class DataConfig:
     discourse_cues: bool = False
     jitter_augment: int = 0
+    # Eval-phase only: merge the organizers' published dev gold labels
+    # (dev_task_*_ref.jsonl, 217 paragraphs) into the TRAINING pool. Training scripts
+    # hard-error if this is true while submission.phase == "dev" -- a model trained on
+    # dev labels cannot legally produce a dev-phase submission. Validation is always
+    # carved from the original 612 rows regardless (see data/loading.py).
+    train_on_dev_refs: bool = False
 
 
 @dataclass

@@ -25,13 +25,25 @@ from transformers import (
     TrainingArguments,
 )
 
-from data.loading import LABELS, id2label, label2id, load_dev_in, load_task1, load_task2, build_shared_split, write_jsonl
+from data.loading import (
+    LABELS,
+    build_kfold_splits,
+    build_shared_split,
+    id2label,
+    label2id,
+    load_dev_in,
+    load_dev_refs,
+    load_task1,
+    load_task2,
+    write_jsonl,
+)
 from evaluation.scoring import score_task1
 from evaluation.submission import write_submission_zip
 from models.losses import get_task1_loss_fn, weighted_bce_pos_weight
 from pretraining.tapt import run_tapt
 from text.cues import build_input_text
 from utils.config import Config, load_config
+from utils.fgm import install_fgm
 from utils.logging import install_rounded_logging
 from utils.tracking import RunTracker, make_trainer_callback
 
@@ -160,6 +172,7 @@ def train_one_run(
         callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
     )
     install_rounded_logging(trainer)
+    install_fgm(trainer, config.training.fgm_epsilon)
     trainer.train()
 
     if save_best:
@@ -199,22 +212,58 @@ def _flatten_config(config: Config) -> dict:
     }
 
 
-def ensemble_and_score(
-    run_results: list[RunResult], split, dev_in: list[dict], config: Config, data_dir: str
-) -> None:
-    val_probs_ensemble = np.mean([r.val_probs for r in run_results], axis=0)
-    dev_probs_ensemble = np.mean([r.dev_probs for r in run_results], axis=0)
-
-    val_gold = np.array([[1.0 if l in r["labels"] else 0.0 for l in LABELS] for r in split.task1_val])
-
+def sweep_label_thresholds(val_probs: np.ndarray, val_gold: np.ndarray) -> dict[str, float]:
+    """Per-label decision-threshold sweep (0.05-0.95, maximize per-label F1). Run on
+    the OOF matrix (612 rows) when k-fold is enabled -- far less noisy than the
+    92-row single-split val set, especially for CO/ST."""
     best_thresholds: dict[str, float] = {}
     for i, label in enumerate(LABELS):
         best_f1, best_t = 0.0, 0.5
         for t in np.arange(0.05, 0.96, 0.05):
-            f1 = f1_score(val_gold[:, i], (val_probs_ensemble[:, i] > t).astype(int), zero_division=0)
+            f1 = f1_score(val_gold[:, i], (val_probs[:, i] > t).astype(int), zero_division=0)
             if f1 > best_f1:
                 best_f1, best_t = f1, t
         best_thresholds[label] = round(float(best_t), 2)
+    return best_thresholds
+
+
+def ensemble_and_score(
+    run_results: list[RunResult], split, dev_in: list[dict], config: Config, data_dir: str, skip_submission: bool = False
+) -> None:
+    val_probs_ensemble = np.mean([r.val_probs for r in run_results], axis=0)
+    dev_probs_ensemble = np.mean([r.dev_probs for r in run_results], axis=0)
+    _finalize_task1(split.task1_val, val_probs_ensemble, dev_probs_ensemble, dev_in, config, data_dir, skip_submission)
+
+
+def kfold_ensemble_and_score(
+    fold_run_results: list[list[RunResult]], folds: list, dev_in: list[dict], config: Config, data_dir: str,
+    skip_submission: bool = False,
+) -> None:
+    """OOF matrix = per-fold backbone-averaged val probs, concatenated over folds
+    (each of the 612 rows appears exactly once). Thresholds are swept on it, the
+    official scorer scores it, and dev/test predictions average over ALL fold x
+    backbone models."""
+    oof_rows: list[dict] = []
+    oof_prob_blocks: list[np.ndarray] = []
+    for results, fold in zip(fold_run_results, folds):
+        oof_rows.extend(fold.task1_val)
+        oof_prob_blocks.append(np.mean([r.val_probs for r in results], axis=0))
+    oof_probs = np.concatenate(oof_prob_blocks, axis=0)
+    dev_probs = np.mean([r.dev_probs for results in fold_run_results for r in results], axis=0)
+
+    write_jsonl(
+        Path(config.output_dir) / "oof_predictions.jsonl",
+        [{"paragraph_id": r["paragraph_id"], "probs": probs.tolist()} for r, probs in zip(oof_rows, oof_probs)],
+    )
+    _finalize_task1(oof_rows, oof_probs, dev_probs, dev_in, config, data_dir, skip_submission)
+
+
+def _finalize_task1(
+    val_rows: list[dict], val_probs_ensemble: np.ndarray, dev_probs_ensemble: np.ndarray,
+    dev_in: list[dict], config: Config, data_dir: str, skip_submission: bool = False,
+) -> None:
+    val_gold = np.array([[1.0 if l in r["labels"] else 0.0 for l in LABELS] for r in val_rows])
+    best_thresholds = sweep_label_thresholds(val_probs_ensemble, val_gold)
 
     def probs_to_labels(probs_row) -> list[str]:
         return [l for i, l in enumerate(LABELS) if probs_row[i] > best_thresholds[l]]
@@ -227,12 +276,24 @@ def ensemble_and_score(
     pred_val_path = output_dir / "val_pred.jsonl"
     dev_pred_path = output_dir / "dev_pred.jsonl"
 
-    write_jsonl(gold_val_path, [{"paragraph_id": r["paragraph_id"], "labels": r["labels"], "type": r["type"]} for r in split.task1_val])
-    write_jsonl(pred_val_path, [{"paragraph_id": r["paragraph_id"], "labels": labels, "type": r["type"]} for r, labels in zip(split.task1_val, val_pred_labels)])
+    write_jsonl(gold_val_path, [{"paragraph_id": r["paragraph_id"], "labels": r["labels"], "type": r["type"]} for r in val_rows])
+    write_jsonl(pred_val_path, [{"paragraph_id": r["paragraph_id"], "labels": labels, "type": r["type"]} for r, labels in zip(val_rows, val_pred_labels)])
     dev_pred_rows = [{"paragraph_id": r["paragraph_id"], "labels": labels, "type": r["type"]} for r, labels in zip(dev_in, dev_pred_labels)]
     write_jsonl(dev_pred_path, dev_pred_rows)
 
-    if config.submission.enabled:
+    if skip_submission:
+        # Caller is train_task1.py's own main(), which always predicts on the REAL
+        # dev_in.jsonl -- but this run trained on dev_refs, so dev_in's text overlaps
+        # training data and "predicting" on it is meaningless. (predict_eval.py reuses
+        # this same function with test_rows passed as the dev_in argument, which is a
+        # legitimate, disjoint set -- it never sets skip_submission.)
+        print(
+            "\nNOTE: this run trained on data.train_on_dev_refs -- dev_pred.jsonl above is "
+            "NOT a real prediction (its rows overlap training data) and no submission zip "
+            "was written for it. Run predict_eval.py against test_in.jsonl for the actual "
+            "Evaluation-phase submission."
+        )
+    elif config.submission.enabled:
         write_submission_zip(
             dev_pred_rows,
             task_file_stem="task_1",
@@ -265,12 +326,35 @@ def main() -> None:
         config.output_dir = args.output_dir
     seeds = [args.seed_override] if args.seed_override is not None else config.seeds
 
+    if config.data.train_on_dev_refs and config.submission.phase == "dev":
+        raise ValueError(
+            "data.train_on_dev_refs=true with submission.phase='dev' is leakage: a model trained on dev "
+            "labels cannot produce a dev-phase submission. Use it only for eval-phase runs."
+        )
+
     task1_rows = load_task1(args.data_dir)
     task2_rows = load_task2(args.data_dir)
     dev_in = load_dev_in(args.data_dir)
-    split = build_shared_split(task1_rows, task2_rows)
+    dev_refs = load_dev_refs(args.data_dir) if config.data.train_on_dev_refs else None
 
     tapt_cache_dir = "outputs/tapt_checkpoints"
+
+    if config.training.num_folds:
+        folds = build_kfold_splits(task1_rows, task2_rows, n_folds=config.training.num_folds, dev_refs=dev_refs)
+        fold_run_results: list[list[RunResult]] = []
+        for fold_i, fold_split in enumerate(folds):
+            results = []
+            for backbone_id in config.backbones:
+                safe_name = backbone_id.replace("/", "__")
+                run_output_dir = f"{config.output_dir}/runs/{safe_name}_fold{fold_i}"
+                results.append(train_one_run(backbone_id, seeds[0], config, tapt_cache_dir, fold_split, dev_in, run_output_dir))
+            fold_run_results.append(results)
+        kfold_ensemble_and_score(
+            fold_run_results, folds, dev_in, config, args.data_dir, skip_submission=config.data.train_on_dev_refs
+        )
+        return
+
+    split = build_shared_split(task1_rows, task2_rows, dev_refs=dev_refs)
     run_results: list[RunResult] = []
     for backbone_id in config.backbones:
         for seed in seeds:
@@ -278,7 +362,7 @@ def main() -> None:
             run_output_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}"
             run_results.append(train_one_run(backbone_id, seed, config, tapt_cache_dir, split, dev_in, run_output_dir))
 
-    ensemble_and_score(run_results, split, dev_in, config, args.data_dir)
+    ensemble_and_score(run_results, split, dev_in, config, args.data_dir, skip_submission=config.data.train_on_dev_refs)
 
 
 if __name__ == "__main__":

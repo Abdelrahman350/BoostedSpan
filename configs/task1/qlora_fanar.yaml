@@ -1,0 +1,65 @@
+# Task 1 qlora_fanar: same QLoRA rank-classification recipe as qlora_allam.yaml, on
+# QCRI/Fanar-1-9B-Instruct (Gemma2 architecture, ungated, Apache-2.0-compatible
+# license). B6 stretch candidate from the research plan -- Gemma2's attention/final
+# logit soft-capping is documented fp16-unstable on bf16-less (Turing) GPUs, so this
+# was gated behind a 50-step NaN smoke test (scripts/fanar_smoke_test.py) before
+# writing this config. SMOKE TEST PASSED: 50 steps, bf16 compute dtype, eager
+# attention, loss 1.30 -> 0.17-0.6 range, zero NaN/Inf. This machine's actual GPU
+# (compute capability 8.9, Ada Lovelace) supports bf16 natively -- unlike the
+# T4-class/Turing hardware CLAUDE.md's other pinned decisions (qlora_allam.yaml's
+# fp16-only choice) were sized for -- so bnb_4bit_compute_dtype: bfloat16 here
+# sidesteps the instability risk entirely rather than reproducing it.
+# train_task1_generative.py reads bnb_4bit_compute_dtype to pick TrainingArguments'
+# bf16/fp16 flag and always loads with attn_implementation="eager" (Gemma2 soft-
+# capping is incompatible with FlashAttention-2 regardless of dtype).
+task: task1
+variant: qlora_fanar
+backbones:
+  - QCRI/Fanar-1-9B-Instruct
+seeds: [42]
+output_dir: outputs/task1_qlora_fanar
+
+tapt:
+  enabled: false
+
+model:
+  max_seq_len: 1024
+  gradient_checkpointing: true
+
+training:
+  epochs: 3
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: false
+
+data:
+  discourse_cues: true
+  jitter_augment: 0
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16  # this machine's GPU supports bf16 -- see header
+  bnb_4bit_use_double_quant: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+
+ensembling:
+  enabled: false
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: both

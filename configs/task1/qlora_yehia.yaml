@@ -1,0 +1,68 @@
+# Task 1 qlora_yehia: same QLoRA rank-classification recipe as qlora_allam.yaml, on
+# `Navid-AI/Yehia-7B-preview` -- a published GRPO fine-tune of the SAME ALLaM-7B-
+# Instruct-preview base (identical Llama architecture and tokenizer), ties ALLaM at
+# 74.0 on AraLingBench, Apache-2.0. This is where the "reinforcement learning"
+# direction lands: rather than running GRPO ourselves (rejected -- see the research
+# notes in this repo's history: T4 rollout throughput ~4-10h/epoch, degenerate group
+# advantage once accuracy is already high, and our rank-classification head isn't
+# generative so RL would require discarding the winning pipeline first), we get the
+# RL benefit as a drop-in model swap.
+#
+# BLOCKED until access is granted: Navid-AI/Yehia-7B-preview is a GATED repo on
+# Hugging Face (unlike ALLaM, which downloads freely). Requires:
+#   1. Requesting access at https://huggingface.co/Navid-AI/Yehia-7B-preview
+#   2. `huggingface-cli login` or an HF_TOKEN env var with that access, before running.
+# Verify tokenizer parity with ALLaM (same " نعم"/" لا" token ids via
+# train_task1_generative.py's _yes_no_token_ids) once access is available -- expected
+# to match since it's the same base model, but must be confirmed, not assumed.
+task: task1
+variant: qlora_yehia
+backbones:
+  - Navid-AI/Yehia-7B-preview
+seeds: [42]
+output_dir: outputs/task1_qlora_yehia
+
+tapt:
+  enabled: false
+
+model:
+  max_seq_len: 1024
+  gradient_checkpointing: true
+
+training:
+  epochs: 3
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: false
+
+data:
+  discourse_cues: true
+  jitter_augment: 0
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: float16  # not bfloat16 -- T4 is Turing, no native bf16 tensor cores
+  bnb_4bit_use_double_quant: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+
+ensembling:
+  enabled: false
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: both

@@ -1,4 +1,5 @@
 from postprocessing.spans import (
+    filter_spans_by_class_rules,
     is_word_char,
     merge_adjacent_same_label,
     postprocess_spans,
@@ -109,3 +110,22 @@ def test_spans_from_char_to_tag_later_chunk_wins_on_overlap():
     char_to_tag.update({(1, 2): "O", (2, 3): "B-OT"})  # chunk 2, overlapping offset (1,2)
     spans = spans_from_char_to_tag(char_to_tag)
     assert spans == [{"label": "AS", "start_offset": 0, "end_offset": 1}, {"label": "OT", "start_offset": 2, "end_offset": 3}]
+
+
+def test_filter_spans_by_class_rules_drops_short_spans_for_configured_labels():
+    spans = [
+        {"label": "CO", "start_offset": 0, "end_offset": 3},  # length 3
+        {"label": "CO", "start_offset": 10, "end_offset": 30},  # length 20
+        {"label": "AS", "start_offset": 40, "end_offset": 43},  # length 3, no rule for AS
+    ]
+    filtered = filter_spans_by_class_rules(spans, min_length_per_class={"CO": 10})
+    assert filtered == [
+        {"label": "CO", "start_offset": 10, "end_offset": 30},
+        {"label": "AS", "start_offset": 40, "end_offset": 43},
+    ]
+
+
+def test_filter_spans_by_class_rules_noop_when_empty():
+    spans = [{"label": "AS", "start_offset": 0, "end_offset": 3}]
+    assert filter_spans_by_class_rules(spans, min_length_per_class=None) == spans
+    assert filter_spans_by_class_rules(spans, min_length_per_class={}) == spans

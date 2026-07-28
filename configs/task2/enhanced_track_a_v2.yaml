@@ -1,0 +1,59 @@
+# Task 2 enhanced_track_a_v2: enhanced_track_a.yaml + two new encoder ensemble
+# members -- aubmindlab/bert-large-arabertv02 (371M, largest Arabic-specific encoder
+# that still fits a single 12GB GPU) and UBC-NLP/ARBERTv2 (MSA/book-trained,
+# complements MARBERTv2's tweet-trained prior -- editorials are MSA, so this should be
+# better-matched, and it's genuine ensemble diversity beyond just adding capacity).
+# Both verified loadable (non-gated, standard BERT arch) under transformers==4.46.3 --
+# no version bump needed. Same additions as configs/task1/boosted_v2.yaml.
+# per_device_batch_size dropped 4->2 (accum 4->8, same effective batch 16) since all
+# 4 backbones in this config share one TrainingArguments and AraBERTv2-large needs
+# more headroom than the bert-base-size models it now trains alongside.
+# FGM adversarial training enabled (fgm_epsilon: 0.5) -- see src/utils/fgm.py.
+task: task2
+variant: enhanced_track_a
+backbones:
+  - CAMeL-Lab/bert-base-arabic-camelbert-mix
+  - UBC-NLP/MARBERTv2
+  - aubmindlab/bert-large-arabertv02
+  - UBC-NLP/ARBERTv2
+seeds: [42, 123]
+output_dir: outputs/task2_enhanced_track_a_v2
+
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  stride: 64
+  use_crf: true
+  gradient_checkpointing: true
+
+training:
+  epochs: 10
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+  fgm_epsilon: 0.5
+
+data:
+  discourse_cues: true
+  jitter_augment: 2
+
+ensembling:
+  enabled: true
+  weighting: internal_f1
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+submission:
+  enabled: true
+  team_name: Nu_Analytics
+  training_setting: both

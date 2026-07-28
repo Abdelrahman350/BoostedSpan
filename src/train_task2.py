@@ -35,10 +35,12 @@ from data.loading import (
     BIO_TAGS,
     LABELS,
     bio2id,
+    build_kfold_splits,
     build_shared_split,
     id2bio,
     label2id,
     load_dev_in,
+    load_dev_refs,
     load_task1,
     load_task2,
     write_jsonl,
@@ -71,6 +73,7 @@ from postprocessing.spans import (
 from pretraining.tapt import run_tapt
 from text.cues import build_input_text
 from utils.config import Config, SpanScorerConfig, load_config
+from utils.fgm import install_fgm
 from utils.logging import install_rounded_logging
 from utils.tracking import RunTracker, make_trainer_callback
 
@@ -315,6 +318,7 @@ def train_task2_model(
         callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
     )
     install_rounded_logging(trainer)
+    install_fgm(trainer, config.training.fgm_epsilon)
     trainer.train()
 
     if save_best:
@@ -355,7 +359,8 @@ def train_task2_model(
 
 
 def ensemble_track_a(
-    run_results: list[Task2RunResult], split, dev_in: list[dict], config: Config, data_dir: str, postprocess: bool
+    run_results: list[Task2RunResult], split, dev_in: list[dict], config: Config, data_dir: str, postprocess: bool,
+    skip_submission: bool = False,
 ) -> None:
     weights = (
         [r.internal_f1 for r in run_results] if config.ensembling.weighting == "internal_f1" else [1.0] * len(run_results)
@@ -374,21 +379,73 @@ def ensemble_track_a(
     val_spans_ensemble = decode_for(split.task2_val, [r.val_spans for r in run_results])
     dev_spans_ensemble = decode_for(dev_in, [r.dev_spans for r in run_results])
 
-    _write_and_score(val_spans_ensemble, dev_spans_ensemble, split, dev_in, config, data_dir)
+    _write_and_score(val_spans_ensemble, dev_spans_ensemble, split.task2_val, dev_in, config, data_dir, skip_submission)
 
 
-def _write_and_score(val_spans, dev_spans, split, dev_in, config: Config, data_dir: str) -> None:
+def kfold_ensemble_track_a(
+    fold_run_results: list[list[Task2RunResult]], folds: list, dev_in: list[dict], config: Config,
+    data_dir: str, postprocess: bool, skip_submission: bool = False,
+) -> None:
+    """OOF spans: each fold's val rows are decoded by voting across that fold's own
+    backbone models only (those rows were held out from exactly those models).
+    Dev/test spans: vote across ALL fold x backbone models. The concatenated OOF set
+    covers all 612 rows once and is scored by the official scorer."""
+
+    def vote(rows: list[dict], results: list[Task2RunResult], use_dev: bool) -> dict:
+        weights = (
+            [r.internal_f1 for r in results] if config.ensembling.weighting == "internal_f1" else [1.0] * len(results)
+        )
+        min_weight = sum(weights) / 2
+        out = {}
+        for r in rows:
+            spans_per_run = [(run.dev_spans if use_dev else run.val_spans)[r["paragraph_id"]] for run in results]
+            raw = ensemble_decode_spans(spans_per_run, len(r["text"]), min_weight, weights)
+            out[r["paragraph_id"]] = postprocess_spans(r["text"], raw) if postprocess else raw
+        return out
+
+    oof_rows: list[dict] = []
+    oof_spans: dict = {}
+    for results, fold in zip(fold_run_results, folds):
+        oof_spans.update(vote(fold.task2_val, results, use_dev=False))
+        oof_rows.extend(fold.task2_val)
+
+    all_runs = [run for results in fold_run_results for run in results]
+    dev_spans = vote(dev_in, all_runs, use_dev=True)
+
+    write_jsonl(
+        Path(config.output_dir) / "oof_predictions.jsonl",
+        [{"paragraph_id": r["paragraph_id"], "labels": oof_spans[r["paragraph_id"]], "type": r["type"]} for r in oof_rows],
+    )
+    _write_and_score(oof_spans, dev_spans, oof_rows, dev_in, config, data_dir, skip_submission)
+
+
+def _write_and_score(
+    val_spans, dev_spans, val_rows: list[dict], dev_in, config: Config, data_dir: str, skip_submission: bool = False
+) -> None:
     output_dir = Path(config.output_dir)
     gold_val_path = output_dir / "val_gold.jsonl"
     pred_val_path = output_dir / "val_pred.jsonl"
     dev_pred_path = output_dir / "dev_pred.jsonl"
 
-    write_jsonl(gold_val_path, [{"paragraph_id": r["paragraph_id"], "labels": r["labels"], "type": r["type"]} for r in split.task2_val])
-    write_jsonl(pred_val_path, [{"paragraph_id": r["paragraph_id"], "labels": val_spans[r["paragraph_id"]], "type": r["type"]} for r in split.task2_val])
+    write_jsonl(gold_val_path, [{"paragraph_id": r["paragraph_id"], "labels": r["labels"], "type": r["type"]} for r in val_rows])
+    write_jsonl(pred_val_path, [{"paragraph_id": r["paragraph_id"], "labels": val_spans[r["paragraph_id"]], "type": r["type"]} for r in val_rows])
     dev_pred_rows = [{"paragraph_id": r["paragraph_id"], "labels": dev_spans[r["paragraph_id"]], "type": r["type"]} for r in dev_in]
     write_jsonl(dev_pred_path, dev_pred_rows)
 
-    if config.submission.enabled:
+    if skip_submission:
+        # See train_task1.py's identical guard: this call came from train_task2.py's
+        # own main() with the REAL dev_in.jsonl, but this run trained on dev_refs, so
+        # dev_in's text overlaps training data -- predicting "dev" here is meaningless
+        # and must never become a submission zip. predict_eval.py reuses this same
+        # function with test_rows passed as dev_in (a legitimate, disjoint set) and
+        # never sets skip_submission.
+        print(
+            "\nNOTE: this run trained on data.train_on_dev_refs -- dev_pred.jsonl above is "
+            "NOT a real prediction (its rows overlap training data) and no submission zip "
+            "was written for it. Run predict_eval.py against test_in.jsonl for the actual "
+            "Evaluation-phase submission."
+        )
+    elif config.submission.enabled:
         write_submission_zip(
             dev_pred_rows,
             task_file_stem="task_2",
@@ -417,7 +474,23 @@ def run_track_a_pipeline(config: Config, split, dev_in: list[dict], data_dir: st
             safe_name = backbone_id.replace("/", "__")
             run_output_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}"
             run_results.append(train_task2_model(backbone_id, seed, config, tapt_cache_dir, split, dev_in, run_output_dir))
-    ensemble_track_a(run_results, split, dev_in, config, data_dir, postprocess=postprocess)
+    ensemble_track_a(run_results, split, dev_in, config, data_dir, postprocess=postprocess, skip_submission=config.data.train_on_dev_refs)
+
+
+def run_track_a_kfold_pipeline(config: Config, folds: list, dev_in: list[dict], data_dir: str) -> None:
+    postprocess = config.variant == "enhanced_track_a"
+    tapt_cache_dir = "outputs/tapt_checkpoints"
+    fold_run_results: list[list[Task2RunResult]] = []
+    for fold_i, fold_split in enumerate(folds):
+        results = []
+        for backbone_id in config.backbones:
+            safe_name = backbone_id.replace("/", "__")
+            run_output_dir = f"{config.output_dir}/runs/{safe_name}_fold{fold_i}"
+            results.append(train_task2_model(backbone_id, config.seeds[0], config, tapt_cache_dir, fold_split, dev_in, run_output_dir))
+        fold_run_results.append(results)
+    kfold_ensemble_track_a(
+        fold_run_results, folds, dev_in, config, data_dir, postprocess=postprocess, skip_submission=config.data.train_on_dev_refs
+    )
 
 
 # --- span_scorer: enumerate-and-classify alternative to BIO+CRF, feeds into the SAME
@@ -492,6 +565,7 @@ def train_span_scorer_model(
         callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
     )
     install_rounded_logging(trainer)
+    install_fgm(trainer, config.training.fgm_epsilon)
     trainer.train()
 
     if save_best:
@@ -536,7 +610,7 @@ def run_span_scorer_pipeline(config: Config, split, dev_in: list[dict], data_dir
             safe_name = backbone_id.replace("/", "__")
             run_output_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}"
             run_results.append(train_span_scorer_model(backbone_id, seed, config, tapt_cache_dir, split, dev_in, run_output_dir))
-    ensemble_track_a(run_results, split, dev_in, config, data_dir, postprocess=True)
+    ensemble_track_a(run_results, split, dev_in, config, data_dir, postprocess=True, skip_submission=config.data.train_on_dev_refs)
 
 
 # --- Track B: separate two-stage pipeline, own functions, own GPU cleanup per stage ---
@@ -595,6 +669,7 @@ def train_boundary_stage(backbone_id: str, seed: int, config: Config, tapt_cache
         compute_metrics=compute_token_classification_metrics if save_best else None,
     )
     install_rounded_logging(trainer)
+    install_fgm(trainer, stage_a_cfg.fgm_epsilon)
     trainer.train()
 
     if save_best:
@@ -666,6 +741,7 @@ def train_span_type_stage(backbone_id: str, seed: int, config: Config, tapt_cach
         compute_metrics=compute_span_type_metrics if save_best else None,
     )
     install_rounded_logging(trainer)
+    install_fgm(trainer, stage_b_cfg.fgm_epsilon)
     trainer.train()
 
     if save_best:
@@ -712,7 +788,7 @@ def run_track_b(config: Config, split, dev_in: list[dict], data_dir: str) -> Non
     gc.collect()
     torch.cuda.empty_cache()
 
-    _write_and_score(val_spans, dev_spans, split, dev_in, config, data_dir)
+    _write_and_score(val_spans, dev_spans, split.task2_val, dev_in, config, data_dir, skip_submission=config.data.train_on_dev_refs)
 
 
 def main() -> None:
@@ -726,10 +802,28 @@ def main() -> None:
     if args.output_dir:
         config.output_dir = args.output_dir
 
+    if config.data.train_on_dev_refs and config.submission.phase == "dev":
+        raise ValueError(
+            "data.train_on_dev_refs=true with submission.phase='dev' is leakage: a model trained on dev "
+            "labels cannot produce a dev-phase submission. Use it only for eval-phase runs."
+        )
+    if config.training.num_folds and config.variant not in ("baseline", "boosted_crf", "enhanced_track_a"):
+        raise ValueError(
+            f"training.num_folds is only supported for Track A variants, not {config.variant!r} "
+            "(track_b and span_scorer keep the single-split path)."
+        )
+
     task1_rows = load_task1(args.data_dir)
     task2_rows = load_task2(args.data_dir)
     dev_in = load_dev_in(args.data_dir)
-    split = build_shared_split(task1_rows, task2_rows)
+    dev_refs = load_dev_refs(args.data_dir) if config.data.train_on_dev_refs else None
+
+    if config.training.num_folds:
+        folds = build_kfold_splits(task1_rows, task2_rows, n_folds=config.training.num_folds, dev_refs=dev_refs)
+        run_track_a_kfold_pipeline(config, folds, dev_in, args.data_dir)
+        return
+
+    split = build_shared_split(task1_rows, task2_rows, dev_refs=dev_refs)
 
     if config.variant == "enhanced_track_b":
         run_track_b(config, split, dev_in, args.data_dir)

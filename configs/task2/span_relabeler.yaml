@@ -1,0 +1,57 @@
+# Task 2 span_relabeler (D9): QLoRA rank-classification adapter that re-types spans
+# proposed by the encoder ensemble (e.g. enhanced_track_a), without moving boundaries.
+# See src/models/span_relabeler.py and scripts/d9_train_and_eval_relabeler.py.
+# Motivated by D8 (scripts/d8_oracle_typing_headroom.py): enhanced_track_a's val F1 is
+# 0.7171 actual vs 0.8868 with oracle typing on the SAME boundaries -- 23.7% of
+# predicted spans are mistyped, so fixing types alone has real headroom.
+task: task2
+variant: span_relabeler
+backbones:
+  - humain-ai/ALLaM-7B-Instruct-preview
+seeds: [42]
+output_dir: outputs/task2_span_relabeler
+
+tapt:
+  enabled: false
+
+model:
+  max_seq_len: 512
+  gradient_checkpointing: true
+
+training:
+  epochs: 1
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: false
+
+data:
+  discourse_cues: false
+  jitter_augment: 0
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: float16  # not bfloat16 -- ALLaM validated fp16, see qlora_allam.yaml
+  bnb_4bit_use_double_quant: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+
+ensembling:
+  enabled: false
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: both

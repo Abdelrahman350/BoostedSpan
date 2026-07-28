@@ -1,0 +1,66 @@
+# Task 1 boosted_v2_eval: boosted_v2.yaml + 5-fold CV (replacing the single 85/15
+# split -- near-universal in low-resource shared-task winning systems, and fixes our
+# 92-row val set being too noisy to measure +/-0.01 improvements) + training on the
+# organizers' published dev gold labels (829 labeled paragraphs total instead of 612).
+# EVAL-PHASE ONLY: submission.phase=eval enforces this (train_task1.py hard-errors if
+# train_on_dev_refs=true is combined with phase=dev -- that would be leakage for a
+# dev-phase submission). Predictions go through predict_eval.py against
+# data/test/test_in.jsonl, not train_task1.py's own dev_in prediction path, since this
+# config's model must never be scored against data it trained on.
+#
+# backbones x folds = 4 x 5 = 20 runs. This is the most compute-intensive config in
+# the repo -- budget accordingly (each run ~= a boosted.yaml single run's cost).
+task: task1
+variant: boosted
+backbones:
+  - CAMeL-Lab/bert-base-arabic-camelbert-mix
+  - UBC-NLP/MARBERTv2
+  - aubmindlab/bert-large-arabertv02
+  - UBC-NLP/ARBERTv2
+seeds: [42]
+output_dir: outputs/task1_boosted_v2_eval
+
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  loss: asymmetric
+  asl_gamma_pos: 1.0
+  asl_gamma_neg: 4.0
+  asl_clip: 0.05
+  gradient_checkpointing: true
+
+training:
+  epochs: 8
+  per_device_batch_size: 2
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+  fgm_epsilon: 0.5
+  num_folds: 5
+
+data:
+  discourse_cues: true
+  jitter_augment: 0
+  train_on_dev_refs: true
+
+ensembling:
+  enabled: true
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: both
+  phase: eval
