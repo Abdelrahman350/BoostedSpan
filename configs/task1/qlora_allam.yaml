@@ -28,9 +28,10 @@ training:
   learning_rate: 2.0e-4
   weight_decay: 0.01
   warmup_ratio: 0.1
-  # No per-epoch best-checkpoint selection for this variant (see
-  # train_task1_generative.py's train_one_qlora_run) -- always saves the final epoch.
-  save_best_checkpoint: false
+  # Real per-epoch best-checkpoint selection (macro F1 @ 0.5 threshold on
+  # split.task1_val, see train_task1_generative.py's evaluate_task1_macro_f1 +
+  # utils/best_checkpoint.py) -- not just the final epoch's adapter.
+  save_best_checkpoint: true
 
 data:
   discourse_cues: true
@@ -56,9 +57,7 @@ wandb:
   enabled: true
   project: sanad-argmining
 
-# Set enabled: true and team_name to package outputs/task1_qlora_allam/task_1.jsonl
-# into a "{team_name}_{training_setting}.zip" submission at the end of the run.
 submission:
-  enabled: false
-  team_name: ""
+  enabled: true
+  team_name: Nu_Analytics
   training_setting: both

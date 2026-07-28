@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "/home/mount/Repositories/BoostedSpan/scripts/d9_train_and_eval_relabeler.py", line 15, in <module>
+    from pathlib import Path
+  File "/usr/lib/python3.12/pathlib.py", line 8, in <module>
+    import fnmatch
+  File "/usr/lib/python3.12/fnmatch.py", line 14, in <module>
+    import re
+  File "/usr/lib/python3.12/re/__init__.py", line 338, in <module>
+    import copyreg
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1322, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1256, in _find_spec
+  File "<frozen importlib._bootstrap>", line 1222, in __enter__
+KeyboardInterrupt

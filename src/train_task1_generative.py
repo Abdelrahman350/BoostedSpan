@@ -25,11 +25,13 @@ import gc
 import numpy as np
 import torch
 from datasets import Dataset
+from sklearn.metrics import f1_score
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Trainer, TrainingArguments
 
 from data.loading import LABELS, build_shared_split, load_dev_in, load_task1, load_task2
 from text.cues import CUE_PATTERNS
 from train_task1 import RunResult, ensemble_and_score
+from utils.best_checkpoint import BestStateTracker, make_best_checkpoint_callback
 from utils.config import Config, load_config
 from utils.logging import install_rounded_logging
 from utils.tracking import RunTracker, make_trainer_callback
@@ -147,6 +149,19 @@ def score_labels_via_logits(text: str, domain: str, model, tokenizer, max_len: i
     return np.array(probs)
 
 
+def evaluate_task1_macro_f1(rows: list[dict], model, tokenizer, max_len: int, discourse_cues: bool) -> float:
+    """Per-epoch proxy for best-checkpoint selection: macro F1 at a fixed 0.5
+    threshold, the same definition train_task1.py's compute_task1_metrics uses for the
+    encoder path -- so "best checkpoint" means the same thing across both training
+    styles. Distinct from ensemble_and_score's per-label threshold sweep used for the
+    actual reported numbers -- this only decides which epoch's weights to keep."""
+    y_true = np.array([[1.0 if label in r["labels"] else 0.0 for label in LABELS] for r in rows])
+    y_pred = np.stack(
+        [score_labels_via_logits(r["text"], r["type"], model, tokenizer, max_len, discourse_cues) for r in rows]
+    ) > 0.5
+    return f1_score(y_true, y_pred, average="macro", zero_division=0)
+
+
 def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_in: list[dict], output_dir: str) -> RunResult:
     if config.tapt.enabled:
         raise ValueError(
@@ -211,9 +226,21 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
     # No per-epoch eval_strategy/load_best_model_at_end here, unlike this repo's other
     # variants: "best checkpoint" would need score_labels_via_logits (many per-paragraph
     # forward passes) run inside HF Trainer's per-epoch eval hook, which doesn't fit the
-    # standard batch-forward compute_metrics interface used elsewhere in this repo. A
-    # disclosed simplification: this variant always saves the FINAL epoch's adapter,
-    # not a per-epoch-selected best one.
+    # standard batch-forward compute_metrics interface used elsewhere in this repo.
+    # Instead, when config.training.save_best_checkpoint is true, a custom
+    # TrainerCallback (utils/best_checkpoint.py) runs evaluate_task1_macro_f1 on
+    # split.task1_val at the end of every epoch and tracks the best adapter state in
+    # memory -- restored into `model` right after trainer.train() below. When false,
+    # this variant saves the FINAL epoch's adapter, same as before.
+    save_best = config.training.save_best_checkpoint
+    best_tracker = BestStateTracker() if save_best else None
+    callbacks = [make_trainer_callback(tracker)] if config.wandb.enabled else []
+    if save_best:
+        eval_fn = lambda m: evaluate_task1_macro_f1(  # noqa: E731
+            split.task1_val, m, tokenizer, config.model.max_seq_len, config.data.discourse_cues
+        )
+        callbacks.append(make_best_checkpoint_callback(eval_fn, best_tracker, run_tracker=tracker, metric_name="eval_f1_macro"))
+
     args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=config.training.epochs,
@@ -232,10 +259,15 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
     )
     trainer = Trainer(
         model=model, args=args, train_dataset=train_ds, data_collator=collator,
-        callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
+        callbacks=callbacks or None,
     )
     install_rounded_logging(trainer)
     trainer.train()
+
+    if save_best and best_tracker.best_state is not None:
+        from peft import set_peft_model_state_dict
+
+        set_peft_model_state_dict(model, best_tracker.best_state)
 
     # PEFT adapter-only save (tens of MB), not a merged model (~14GB fp16) -- reload
     # via PeftModel.from_pretrained(base_model, adapter_dir).

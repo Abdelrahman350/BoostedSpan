@@ -19,13 +19,17 @@ model:
   gradient_checkpointing: true
 
 training:
-  epochs: 1
+  epochs: 3
   per_device_batch_size: 1
   gradient_accumulation_steps: 16
   learning_rate: 2.0e-4
   weight_decay: 0.01
   warmup_ratio: 0.1
-  save_best_checkpoint: false
+  # Real per-epoch best-checkpoint selection (macro F1 across the 6 span types on
+  # split.task2_val, see src/models/span_relabeler.py's evaluate_relabel_macro_f1 +
+  # utils/best_checkpoint.py) -- requires scripts/d9_train_and_eval_relabeler.py to
+  # pass eval_rows=split.task2_val, which it does.
+  save_best_checkpoint: true
 
 data:
   discourse_cues: false

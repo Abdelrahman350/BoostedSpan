@@ -66,9 +66,7 @@ wandb:
   enabled: true
   project: sanad-argmining
 
-# Set enabled: true and team_name to package outputs/task2_span_scorer/task_2.jsonl
-# into a "{team_name}_{training_setting}.zip" submission at the end of the run.
 submission:
-  enabled: false
-  team_name: ""
+  enabled: true
+  team_name: Nu_Analytics
   training_setting: both

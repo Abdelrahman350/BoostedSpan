@@ -56,6 +56,6 @@ wandb:
   project: sanad-argmining
 
 submission:
-  enabled: false
-  team_name: ""
+  enabled: true
+  team_name: Nu_Analytics
   training_setting: both

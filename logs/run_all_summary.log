@@ -1,0 +1,24 @@
+=== [2026-07-28 21:23:28] START task1_baseline ===
+=== [2026-07-28 21:24:42] OK    task1_baseline (log: logs/task1_baseline.log) ===
+=== [2026-07-28 21:24:42] START task1_boosted ===
+=== [2026-07-28 21:31:39] OK    task1_boosted (log: logs/task1_boosted.log) ===
+=== [2026-07-28 21:31:39] START task1_boosted_v2 ===
+=== [2026-07-28 22:28:51] OK    task1_boosted_v2 (log: logs/task1_boosted_v2.log) ===
+=== [2026-07-28 22:28:51] START task1_qlora_allam ===
+=== [2026-07-29 00:02:51] OK    task1_qlora_allam (log: logs/task1_qlora_allam.log) ===
+=== [2026-07-29 00:02:51] START task1_qlora_fanar ===
+=== [2026-07-29 02:42:14] FAIL  task1_qlora_fanar (log: logs/task1_qlora_fanar.log) ===
+=== [2026-07-29 02:42:14] START task2_baseline ===
+=== [2026-07-29 02:42:14] FAIL  task2_baseline (log: logs/task2_baseline.log) ===
+=== [2026-07-29 02:42:14] START task2_boosted_crf ===
+=== [2026-07-29 02:42:15] FAIL  task2_boosted_crf (log: logs/task2_boosted_crf.log) ===
+=== [2026-07-29 02:42:15] START task2_enhanced_track_a ===
+=== [2026-07-29 02:42:15] FAIL  task2_enhanced_track_a (log: logs/task2_enhanced_track_a.log) ===
+=== [2026-07-29 02:42:15] START task2_enhanced_track_a_v2 ===
+=== [2026-07-29 02:42:16] FAIL  task2_enhanced_track_a_v2 (log: logs/task2_enhanced_track_a_v2.log) ===
+=== [2026-07-29 02:42:16] START task2_enhanced_track_b ===
+=== [2026-07-29 02:42:16] FAIL  task2_enhanced_track_b (log: logs/task2_enhanced_track_b.log) ===
+=== [2026-07-29 02:42:16] START task2_span_scorer ===
+=== [2026-07-29 02:42:16] FAIL  task2_span_scorer (log: logs/task2_span_scorer.log) ===
+=== [2026-07-29 02:42:16] START task2_span_relabeler ===
+=== [2026-07-29 02:42:16] FAIL  task2_span_relabeler (log: logs/task2_span_relabeler.log) ===

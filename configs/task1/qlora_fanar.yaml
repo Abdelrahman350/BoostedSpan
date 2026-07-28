@@ -33,7 +33,8 @@ training:
   learning_rate: 2.0e-4
   weight_decay: 0.01
   warmup_ratio: 0.1
-  save_best_checkpoint: false
+  # Real per-epoch best-checkpoint selection -- see qlora_allam.yaml's comment.
+  save_best_checkpoint: true
 
 data:
   discourse_cues: true
@@ -60,6 +61,6 @@ wandb:
   project: sanad-argmining
 
 submission:
-  enabled: false
-  team_name: ""
+  enabled: true
+  team_name: Nu_Analytics
   training_setting: both

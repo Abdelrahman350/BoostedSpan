@@ -26,10 +26,12 @@ import gc
 import numpy as np
 import torch
 from datasets import Dataset
+from sklearn.metrics import f1_score
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Trainer, TrainingArguments
 
 from data.loading import LABELS
 from train_task1_generative import LABEL_DESCRIPTIONS, build_sft_example, make_generative_collate_fn
+from utils.best_checkpoint import BestStateTracker, make_best_checkpoint_callback
 from utils.config import Config
 from utils.logging import install_rounded_logging
 from utils.tracking import RunTracker, make_trainer_callback
@@ -89,6 +91,21 @@ def score_span_types_via_logits(text: str, domain: str, span: dict, model, token
     return np.array(probs)
 
 
+def evaluate_relabel_macro_f1(eval_rows: list[dict], model, tokenizer, max_len: int) -> float:
+    """Per-epoch proxy for best-checkpoint selection: macro F1 across the 6 span
+    types (single-label multiclass -- each gold span's argmax-predicted type vs its
+    true type), same macro-F1 framing as train_task1_generative.py's
+    evaluate_task1_macro_f1 and the encoder path's compute_task1_metrics, so "best
+    checkpoint" means the same thing across all training styles in this repo."""
+    y_true, y_pred = [], []
+    for r in eval_rows:
+        for span in r["labels"]:
+            probs = score_span_types_via_logits(r["text"], r["type"], span, model, tokenizer, max_len)
+            y_true.append(span["label"])
+            y_pred.append(LABELS[int(np.argmax(probs))])
+    return f1_score(y_true, y_pred, labels=LABELS, average="macro", zero_division=0)
+
+
 def relabel_spans(
     rows: list[dict], spans_by_id: dict, model, tokenizer, max_len: int, confidence_threshold: float
 ) -> dict:
@@ -115,8 +132,17 @@ def relabel_spans(
     return out
 
 
-def train_span_relabeler(backbone_id: str, seed: int, config: Config, train_rows: list[dict], output_dir: str):
-    """Trains and returns (model, tokenizer), adapter also saved to output_dir/checkpoint."""
+def train_span_relabeler(
+    backbone_id: str, seed: int, config: Config, train_rows: list[dict], output_dir: str,
+    eval_rows: list[dict] | None = None,
+):
+    """Trains and returns (model, tokenizer), adapter also saved to output_dir/checkpoint.
+
+    eval_rows: a held-out slice (e.g. split.task2_val) never included in train_rows,
+    used for per-epoch best-checkpoint selection when config.training.save_best_checkpoint
+    is true -- see evaluate_relabel_macro_f1 and utils/best_checkpoint.py. Required
+    (non-empty) whenever save_best_checkpoint is true; ignored otherwise.
+    """
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -124,6 +150,8 @@ def train_span_relabeler(backbone_id: str, seed: int, config: Config, train_rows
     lora_cfg = config.lora
     if quant_cfg is None or lora_cfg is None:
         raise ValueError("span_relabeler requires both `quantization:` and `lora:` blocks in the config.")
+    if config.training.save_best_checkpoint and not eval_rows:
+        raise ValueError("span_relabeler requires a non-empty eval_rows when training.save_best_checkpoint is true.")
 
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
@@ -161,6 +189,14 @@ def train_span_relabeler(backbone_id: str, seed: int, config: Config, train_rows
     tracker = RunTracker(config.wandb, run_name, run_config={"backbone": backbone_id, "seed": seed, "variant": config.variant})
 
     use_bf16 = quant_cfg.bnb_4bit_compute_dtype == "bfloat16"
+
+    save_best = config.training.save_best_checkpoint
+    best_tracker = BestStateTracker() if save_best else None
+    callbacks = [make_trainer_callback(tracker)] if config.wandb.enabled else []
+    if save_best:
+        eval_fn = lambda m: evaluate_relabel_macro_f1(eval_rows, m, tokenizer, config.model.max_seq_len)  # noqa: E731
+        callbacks.append(make_best_checkpoint_callback(eval_fn, best_tracker, run_tracker=tracker, metric_name="eval_relabel_macro_f1"))
+
     args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=config.training.epochs,
@@ -179,10 +215,15 @@ def train_span_relabeler(backbone_id: str, seed: int, config: Config, train_rows
     )
     trainer = Trainer(
         model=model, args=args, train_dataset=train_ds, data_collator=collator,
-        callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
+        callbacks=callbacks or None,
     )
     install_rounded_logging(trainer)
     trainer.train()
+
+    if save_best and best_tracker.best_state is not None:
+        from peft import set_peft_model_state_dict
+
+        set_peft_model_state_dict(model, best_tracker.best_state)
 
     checkpoint_dir = f"{output_dir}/checkpoint"
     model.save_pretrained(checkpoint_dir)

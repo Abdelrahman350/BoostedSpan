@@ -40,19 +40,20 @@ from transformers import (
     TrainingArguments,
 )
 
-from data.loading import BIO_TAGS, LABELS, build_shared_split, id2bio, load_task1, load_task2, read_jsonl
+from data.loading import BIO_TAGS, LABELS, build_kfold_splits, build_shared_split, id2bio, load_task1, load_task2, read_jsonl
 from evaluation.scoring import corpus_partial_overlap_f1
 from models.crf_tagger import TokenClassifierWithCRF
 from models.span_scorer import SpanScorerModel, predict_span_scorer_paragraph
 from models.span_type_classifier import SpanTypeClassifier, predict_span_types
 from postprocessing.spans import postprocess_spans
-from train_task1 import RunResult, ensemble_and_score, tokenize_task1
+from train_task1 import RunResult, ensemble_and_score, kfold_ensemble_and_score, tokenize_task1
 from train_task1_generative import score_labels_via_logits
 from train_task2 import (
     ARG_BIO_TAGS,
     Task2RunResult,
     arg_id2bio,
     ensemble_track_a,
+    kfold_ensemble_track_a,
     predict_task2_paragraph,
     _write_and_score,
 )
@@ -85,16 +86,13 @@ def _device() -> str:
 # directly via .from_pretrained) ---
 
 
-def reload_task1_encoder_run(backbone_id: str, seed: int, config: Config, split, test_rows: list[dict]) -> RunResult:
-    safe_name = backbone_id.replace("/", "__")
-    checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}/checkpoint"
-
+def reload_task1_encoder_run(checkpoint_dir: str, config: Config, val_rows: list[dict], test_rows: list[dict]) -> RunResult:
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
     model = AutoModelForSequenceClassification.from_pretrained(checkpoint_dir)
     model.to(_device())
     model.eval()
 
-    val_ds = Dataset.from_dict(tokenize_task1(tokenizer, split.task1_val, config.model.max_seq_len, config.data.discourse_cues))
+    val_ds = Dataset.from_dict(tokenize_task1(tokenizer, val_rows, config.model.max_seq_len, config.data.discourse_cues))
     test_ds = Dataset.from_dict(
         tokenize_task1(tokenizer, test_rows, config.model.max_seq_len, config.data.discourse_cues, has_labels=False)
     )
@@ -148,23 +146,50 @@ def reload_qlora_run(backbone_id: str, seed: int, config: Config, split, test_ro
     return RunResult(val_probs=val_probs, dev_probs=test_probs)
 
 
-def run_task1_eval(config: Config, split, test_rows: list[dict], eval_config: Config, data_dir: str) -> None:
+def run_task1_kfold_eval(
+    config: Config, task1_rows: list[dict], task2_rows: list[dict], test_rows: list[dict], eval_config: Config, data_dir: str
+) -> None:
+    """Mirrors train_task1.py's own num_folds branch: reconstruct the exact same
+    folds training used (deterministic given n_folds/random_state -- dev_refs never
+    affect the val-fold partition, only each fold's train side, so no dev_refs arg is
+    needed here), reload every fold x backbone checkpoint (saved under
+    {output_dir}/runs/{backbone}_fold{i}/checkpoint, not _seed{seed}/), and reuse
+    kfold_ensemble_and_score UNCHANGED -- it's already generic over its dev_in/config
+    args the same way ensemble_and_score is for the non-k-fold path above."""
+    folds = build_kfold_splits(task1_rows, task2_rows, n_folds=config.training.num_folds)
+    fold_run_results: list[list[RunResult]] = []
+    for fold_i, fold_split in enumerate(folds):
+        results = []
+        for backbone_id in config.backbones:
+            safe_name = backbone_id.replace("/", "__")
+            checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_fold{fold_i}/checkpoint"
+            results.append(reload_task1_encoder_run(checkpoint_dir, config, fold_split.task1_val, test_rows))
+        fold_run_results.append(results)
+    kfold_ensemble_and_score(fold_run_results, folds, test_rows, eval_config, data_dir, skip_submission=False)
+
+
+def run_task1_eval(
+    config: Config, split, task1_rows: list[dict], task2_rows: list[dict], test_rows: list[dict], eval_config: Config, data_dir: str
+) -> None:
+    if config.training.num_folds:
+        run_task1_kfold_eval(config, task1_rows, task2_rows, test_rows, eval_config, data_dir)
+        return
     run_results = []
     for backbone_id in config.backbones:
         for seed in config.seeds:
             if config.variant == "qlora_allam":
                 run_results.append(reload_qlora_run(backbone_id, seed, config, split, test_rows))
             else:
-                run_results.append(reload_task1_encoder_run(backbone_id, seed, config, split, test_rows))
+                safe_name = backbone_id.replace("/", "__")
+                checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}/checkpoint"
+                run_results.append(reload_task1_encoder_run(checkpoint_dir, config, split.task1_val, test_rows))
     ensemble_and_score(run_results, split, test_rows, eval_config, data_dir)
 
 
 # --- Task 2: baseline / boosted_crf / enhanced_track_a / span_scorer (Track A shape) ---
 
 
-def reload_task2_track_a_run(backbone_id: str, seed: int, config: Config, split, test_rows: list[dict]) -> Task2RunResult:
-    safe_name = backbone_id.replace("/", "__")
-    checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}/checkpoint"
+def reload_task2_track_a_run(checkpoint_dir: str, backbone_id: str, config: Config, val_rows: list[dict], test_rows: list[dict]) -> Task2RunResult:
     base = resolve_base_checkpoint(backbone_id, config)
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
     device = _device()
@@ -210,10 +235,10 @@ def reload_task2_track_a_run(backbone_id: str, seed: int, config: Config, split,
                 for r in rows
             }
 
-    val_spans = predict(split.task2_val)
+    val_spans = predict(val_rows)
     test_spans = predict(test_rows)
 
-    gold_val_by_id = {r["paragraph_id"]: r["labels"] for r in split.task2_val}
+    gold_val_by_id = {r["paragraph_id"]: r["labels"] for r in val_rows}
     internal_f1 = corpus_partial_overlap_f1(gold_val_by_id, val_spans)
 
     del model
@@ -222,12 +247,38 @@ def reload_task2_track_a_run(backbone_id: str, seed: int, config: Config, split,
     return Task2RunResult(val_spans=val_spans, dev_spans=test_spans, internal_f1=internal_f1)
 
 
-def run_task2_track_a_eval(config: Config, split, test_rows: list[dict], eval_config: Config, data_dir: str) -> None:
+def run_task2_track_a_kfold_eval(
+    config: Config, task1_rows: list[dict], task2_rows: list[dict], test_rows: list[dict], eval_config: Config, data_dir: str
+) -> None:
+    """Mirrors run_task1_kfold_eval -- see its docstring. Task 2's own num_folds guard
+    (train_task2.py) already restricts k-fold to Track A variants, so this is only
+    ever reached for baseline/boosted_crf/enhanced_track_a."""
+    postprocess = config.variant == "enhanced_track_a"
+    folds = build_kfold_splits(task1_rows, task2_rows, n_folds=config.training.num_folds)
+    fold_run_results: list[list[Task2RunResult]] = []
+    for fold_i, fold_split in enumerate(folds):
+        results = []
+        for backbone_id in config.backbones:
+            safe_name = backbone_id.replace("/", "__")
+            checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_fold{fold_i}/checkpoint"
+            results.append(reload_task2_track_a_run(checkpoint_dir, backbone_id, config, fold_split.task2_val, test_rows))
+        fold_run_results.append(results)
+    kfold_ensemble_track_a(fold_run_results, folds, test_rows, eval_config, data_dir, postprocess=postprocess, skip_submission=False)
+
+
+def run_task2_track_a_eval(
+    config: Config, split, task1_rows: list[dict], task2_rows: list[dict], test_rows: list[dict], eval_config: Config, data_dir: str
+) -> None:
+    if config.training.num_folds:
+        run_task2_track_a_kfold_eval(config, task1_rows, task2_rows, test_rows, eval_config, data_dir)
+        return
     postprocess = config.variant == "enhanced_track_a"
     run_results = []
     for backbone_id in config.backbones:
         for seed in config.seeds:
-            run_results.append(reload_task2_track_a_run(backbone_id, seed, config, split, test_rows))
+            safe_name = backbone_id.replace("/", "__")
+            checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}/checkpoint"
+            run_results.append(reload_task2_track_a_run(checkpoint_dir, backbone_id, config, split.task2_val, test_rows))
     ensemble_track_a(run_results, split, test_rows, eval_config, data_dir, postprocess=postprocess)
 
 
@@ -303,11 +354,11 @@ def main() -> None:
     )
 
     if config.task == "task1":
-        run_task1_eval(config, split, test_rows, eval_config, args.data_dir)
+        run_task1_eval(config, split, task1_rows, task2_rows, test_rows, eval_config, args.data_dir)
     elif config.variant == "enhanced_track_b":
         run_task2_track_b_eval(config, split, test_rows, eval_config, args.data_dir)
     else:
-        run_task2_track_a_eval(config, split, test_rows, eval_config, args.data_dir)
+        run_task2_track_a_eval(config, split, task1_rows, task2_rows, test_rows, eval_config, args.data_dir)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,33 @@
+Traceback (most recent call last):
+  File "/home/mount/Repositories/BoostedSpan/.venv/lib/python3.12/site-packages/numpy/compat/py3k.py", line 24, in <module>
+    import pickle5 as pickle
+ModuleNotFoundError: No module named 'pickle5'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/mount/Repositories/BoostedSpan/src/train_task2.py", line 21, in <module>
+    import numpy as np
+  File "/home/mount/Repositories/BoostedSpan/.venv/lib/python3.12/site-packages/numpy/__init__.py", line 130, in <module>
+    from numpy.__config__ import show as show_config
+  File "/home/mount/Repositories/BoostedSpan/.venv/lib/python3.12/site-packages/numpy/__config__.py", line 4, in <module>
+    from numpy.core._multiarray_umath import (
+  File "/home/mount/Repositories/BoostedSpan/.venv/lib/python3.12/site-packages/numpy/core/__init__.py", line 72, in <module>
+    from . import numerictypes as nt
+  File "/home/mount/Repositories/BoostedSpan/.venv/lib/python3.12/site-packages/numpy/core/numerictypes.py", line 105, in <module>
+    from ._type_aliases import (
+  File "/home/mount/Repositories/BoostedSpan/.venv/lib/python3.12/site-packages/numpy/core/_type_aliases.py", line 20, in <module>
+    from numpy.compat import unicode
+  File "/home/mount/Repositories/BoostedSpan/.venv/lib/python3.12/site-packages/numpy/compat/__init__.py", line 14, in <module>
+    from . import py3k
+  File "/home/mount/Repositories/BoostedSpan/.venv/lib/python3.12/site-packages/numpy/compat/py3k.py", line 26, in <module>
+    import pickle
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 991, in exec_module
+  File "<frozen importlib._bootstrap_external>", line 1124, in get_code
+  File "<frozen importlib._bootstrap_external>", line 753, in _compile_bytecode
+KeyboardInterrupt

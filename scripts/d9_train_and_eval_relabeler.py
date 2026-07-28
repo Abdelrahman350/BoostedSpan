@@ -35,7 +35,15 @@ def main() -> None:
 
     backbone_id = config.backbones[0]
     seed = config.seeds[0]
-    model, tokenizer = train_span_relabeler(backbone_id, seed, config, split.task2_train, str(OUT_DIR / "run"))
+    # split.task2_val is reused for THREE purposes below: per-epoch best-checkpoint
+    # selection (here), the confidence-threshold sweep, and the final reported
+    # baseline-vs-relabeled comparison. Accepted simplification -- CLAUDE.md's leakage
+    # line is at test_in.jsonl/dev_in.jsonl, not this internal val split, and there's
+    # no k-fold OOF for the QLoRA paths (5-fold CV was only built for the encoder
+    # paths; QLoRA training is far too slow to repeat 5x per config).
+    model, tokenizer = train_span_relabeler(
+        backbone_id, seed, config, split.task2_train, str(OUT_DIR / "run"), eval_rows=split.task2_val
+    )
 
     gold_by_id = {r["paragraph_id"]: r["labels"] for r in split.task2_val}
     type_by_id = {r["paragraph_id"]: r["type"] for r in split.task2_val}
