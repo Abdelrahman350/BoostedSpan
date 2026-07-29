@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/Argmining/Daleel2026.git"
-DEST="data/raw/Daleel2026"
+DEST="dataset/raw/Daleel2026"
 
 if [[ "${1:-}" == "--force" ]] && [[ -d "$DEST" ]]; then
     echo "Removing existing $DEST (--force)"

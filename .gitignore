@@ -1,4 +1,4 @@
-data/
+dataset/
 outputs/
 wandb/
 *.jsonl
