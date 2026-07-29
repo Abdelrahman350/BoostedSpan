@@ -25,8 +25,8 @@ model:
 
 training:
   epochs: 3
-  per_device_batch_size: 1
-  gradient_accumulation_steps: 16
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 32
   learning_rate: 2.0e-4
   weight_decay: 0.01
   warmup_ratio: 0.1
@@ -45,14 +45,21 @@ data:
 quantization:
   load_in_4bit: true
   bnb_4bit_quant_type: nf4
-  bnb_4bit_compute_dtype: float16  # not bfloat16 -- T4 is Turing, no native bf16 tensor cores
+  # bfloat16, not float16 -- verified actual GPU is an RTX 4080 Laptop (Ada Lovelace),
+  # which has native bf16 tensor cores, unlike the T4 (Turing) this repo's defaults
+  # were originally sized for. bf16's wider dynamic range is more numerically stable
+  # for QLoRA than fp16 at the same memory footprint.
+  bnb_4bit_compute_dtype: bfloat16
   bnb_4bit_use_double_quant: true
 
 lora:
   r: 16
   alpha: 32
   dropout: 0.05
-  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  # Attention + MLP projections, not attention-only -- standard QLoRA practice.
+  # Attention-only adapters noticeably underfit vs. also adapting gate/up/down_proj;
+  # the added trainable params are still tiny relative to the frozen 7B base.
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
 
 ensembling:
   enabled: false
