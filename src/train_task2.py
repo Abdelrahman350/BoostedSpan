@@ -56,6 +56,7 @@ from models.span_scorer import (
 )
 from models.span_type_classifier import (
     ClassWeightedSpanTrainer,
+    ContrastiveSpanTypeTrainer,
     SpanTypeClassifier,
     build_span_type_examples,
     make_span_collate_fn,
@@ -394,7 +395,12 @@ def _write_and_score(val_spans, dev_spans, split, dev_in, config: Config, data_d
             team_name=config.submission.team_name,
             training_setting=config.submission.training_setting,
             output_dir=f"submissions/{config.submission.phase}",
-            run_label=f"{config.task}_{config.variant}",
+            # See train_task1.ensemble_and_score's identical comment: output_dir's
+            # basename, not variant, avoids collisions between sibling configs that
+            # deliberately share the same variant string (e.g. enhanced_track_b vs.
+            # enhanced_track_b_contrastive both use variant: enhanced_track_b so
+            # train_task2.py's dispatch is unchanged).
+            run_label=Path(config.output_dir).name,
         )
 
     tracker = RunTracker(config.wandb, f"{config.task}_{config.variant}_ensemble", run_config={"variant": config.variant})
@@ -655,10 +661,17 @@ def train_span_type_stage(backbone_id: str, seed: int, config: Config, tapt_cach
         logging_steps=20, remove_unused_columns=False,
         fp16=torch.cuda.is_available(), seed=seed, report_to=[],
     )
-    trainer = ClassWeightedSpanTrainer(
+    trainer_cls = ContrastiveSpanTypeTrainer if config.model.contrastive_enabled else ClassWeightedSpanTrainer
+    extra_kwargs = (
+        {"contrastive_weight": config.model.contrastive_weight, "contrastive_temperature": config.model.contrastive_temperature}
+        if config.model.contrastive_enabled
+        else {}
+    )
+    trainer = trainer_cls(
         model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds if save_best else None,
         data_collator=make_span_collate_fn(tokenizer), class_weights=class_weights,
         compute_metrics=compute_span_type_metrics if save_best else None,
+        **extra_kwargs,
     )
     install_rounded_logging(trainer)
     trainer.train()

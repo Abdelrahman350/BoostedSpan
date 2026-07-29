@@ -1,0 +1,92 @@
+# Task 2 enhanced_track_b_contrastive: same two-stage pipeline as enhanced_track_b,
+# but Stage B (SpanTypeClassifier) adds a supervised contrastive term (SupCon,
+# models/contrastive.py) over its pre-classifier span representation, alongside its
+# existing class-weighted cross-entropy -- see
+# docs/research/non_ensemble_approaches_task1_task2.md for why Track B's Stage B
+# (teacher-forced on GOLD span offsets) was chosen over span_scorer.yaml's
+# enumerate-and-classify model as the contrastive target: span_scorer currently
+# scores far below competitive (F1=0.066) for reasons a contrastive loss wouldn't
+# fix, which would confound this ablation. Single backbone/seed by design, same as
+# enhanced_track_b -- this is an ablation ("does contrastive representation learning
+# help span-type discrimination"), not a scaled-up production config.
+#
+# KNOWN LIMITATION: SupCon only sees in-batch positives. CO/ST have only 38-50 total
+# span instances across the whole 612-paragraph corpus, so even at the larger batch
+# size below, many batches will still have zero same-label pairs for those two
+# labels -- the contrastive term contributes ~nothing for them. Not fixed here (no
+# cross-batch memory bank / class-balanced sampler); a disclosed scope cut for this
+# first pass, not a bug.
+task: task2
+variant: enhanced_track_b
+backbones:
+  - CAMeL-Lab/bert-base-arabic-camelbert-mix
+seeds: [42]
+output_dir: outputs/task2_enhanced_track_b_contrastive
+
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  stride: 64
+  use_crf: true
+  gradient_checkpointing: true
+  contrastive_enabled: true
+  contrastive_weight: 0.1
+  contrastive_temperature: 0.1
+
+training:
+  # Flat fields are unused for this variant (train_task2.py falls back to
+  # training.stage_a/stage_b explicitly) but kept populated so the schema stays valid
+  # if this config is ever read by tooling that expects the flat fields.
+  epochs: 10
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  stage_a:
+    epochs: 10
+    per_device_batch_size: 4
+    gradient_accumulation_steps: 4
+    learning_rate: 3.0e-5
+    weight_decay: 0.01
+    warmup_ratio: 0.1
+    save_best_checkpoint: true
+  stage_b:
+    epochs: 8
+    # Raised from enhanced_track_b.yaml's 8 to 32, grad_accum dropped from 2 to 1 to
+    # keep the effective batch size in the same ballpark (~16 -> 32) -- a bigger
+    # in-batch pool directly increases the odds of same-label positive pairs for the
+    # rarer labels, which matters more for SupCon than it did for plain CE.
+    # SpanTypeClassifier is a small encoder (135-163M params, not the 7B QLoRA
+    # model), so this fits comfortably on a 12GB GPU without gradient checkpointing.
+    per_device_batch_size: 32
+    gradient_accumulation_steps: 1
+    learning_rate: 2.0e-5
+    weight_decay: 0.01
+    warmup_ratio: 0.1
+    save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 0
+
+ensembling:
+  enabled: false
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Left disabled, same reasoning as the other configs: this run only predicts on
+# dev_in.jsonl (practice/dev-phase set) -- the real submission is generated
+# separately via predict_eval.py against test_in.jsonl.
+submission:
+  enabled: false
+  team_name: Nu_Analytics
+  training_setting: both

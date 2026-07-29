@@ -37,6 +37,12 @@ class ModelConfig:
     stride: int = 64
     use_crf: bool = False
     gradient_checkpointing: bool = False
+    # task2 Track B stage B only (SpanTypeClassifier) -- adds a supervised contrastive
+    # term (models/contrastive.py's SupConLoss) alongside the classifier's existing
+    # class-weighted cross-entropy. Ignored everywhere else.
+    contrastive_enabled: bool = False
+    contrastive_weight: float = 0.1
+    contrastive_temperature: float = 0.1
 
 
 @dataclass

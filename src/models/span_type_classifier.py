@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel, Trainer
 
+from models.contrastive import SupConLoss
 from text.cues import build_input_text
 
 
@@ -31,12 +32,13 @@ class SpanTypeClassifier(nn.Module):
             s, e = span_start[i].item(), max(span_end[i].item(), span_start[i].item() + 1)
             span_reprs.append(hidden_states[i, s:e].mean(dim=0))
         span_repr = torch.stack(span_reprs, dim=0)
-        logits = self.classifier(self.dropout(torch.cat([cls_repr, span_repr], dim=-1)))
+        combined_repr = self.dropout(torch.cat([cls_repr, span_repr], dim=-1))
+        logits = self.classifier(combined_repr)
 
         loss = None
         if type_labels is not None:
             loss = nn.CrossEntropyLoss(weight=class_weights)(logits, type_labels)
-        return {"loss": loss, "logits": logits}
+        return {"loss": loss, "logits": logits, "combined_repr": combined_repr}
 
 
 def char_span_to_token_span(offsets: list[tuple[int, int]], char_start: int, char_end: int):
@@ -108,6 +110,32 @@ class ClassWeightedSpanTrainer(Trainer):
         type_labels = inputs.pop("type_labels")
         outputs = model(**inputs, type_labels=type_labels, class_weights=self.class_weights.to(model.classifier.weight.device))
         loss = outputs["loss"]
+        # combined_repr is an internal-only key (used by ContrastiveSpanTypeTrainer
+        # below): Trainer.prediction_step gathers every non-"loss" key of a dict
+        # `outputs` into the eval `logits` tuple it hands to compute_metrics, so
+        # leaving this in would silently turn compute_span_type_metrics' `logits,
+        # labels = eval_pred` into unpacking a 2-tuple instead of the logits array.
+        outputs.pop("combined_repr", None)
+        return (loss, outputs) if return_outputs else loss
+
+
+class ContrastiveSpanTypeTrainer(ClassWeightedSpanTrainer):
+    """ClassWeightedSpanTrainer + a supervised contrastive term (models/contrastive.py)
+    over combined_repr, the same pre-classifier representation the CE loss is computed
+    from. See models/contrastive.py's docstring for the known in-batch-positives
+    limitation on CO/ST."""
+
+    def __init__(self, *args, contrastive_weight: float, contrastive_temperature: float, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.contrastive_weight = contrastive_weight
+        self.supcon = SupConLoss(temperature=contrastive_temperature)
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        type_labels = inputs.pop("type_labels")
+        outputs = model(**inputs, type_labels=type_labels, class_weights=self.class_weights.to(model.classifier.weight.device))
+        contrastive_loss = self.supcon(outputs["combined_repr"], type_labels)
+        loss = outputs["loss"] + self.contrastive_weight * contrastive_loss
+        outputs.pop("combined_repr", None)  # see ClassWeightedSpanTrainer.compute_loss's comment
         return (loss, outputs) if return_outputs else loss
 
 
