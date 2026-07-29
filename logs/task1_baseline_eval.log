@@ -1,0 +1,75 @@
+/home/mount/Repositories/BoostedSpan/.venv/lib/python3.12/site-packages/transformers/utils/hub.py:128: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
+  0%|          | 0/12 [00:00<?, ?it/s] 42%|████▏     | 5/12 [00:00<00:00, 47.13it/s] 83%|████████▎ | 10/12 [00:00<00:00, 18.66it/s]100%|██████████| 12/12 [00:00<00:00, 21.88it/s]
+  0%|          | 0/27 [00:00<?, ?it/s] 11%|█         | 3/27 [00:00<00:00, 24.32it/s] 22%|██▏       | 6/27 [00:00<00:01, 16.50it/s] 33%|███▎      | 9/27 [00:00<00:00, 19.47it/s] 44%|████▍     | 12/27 [00:00<00:00, 18.91it/s] 52%|█████▏    | 14/27 [00:00<00:00, 16.75it/s] 59%|█████▉    | 16/27 [00:00<00:00, 16.16it/s] 67%|██████▋   | 18/27 [00:01<00:00, 16.87it/s] 74%|███████▍  | 20/27 [00:01<00:00, 16.68it/s] 85%|████████▌ | 23/27 [00:01<00:00, 17.21it/s] 93%|█████████▎| 25/27 [00:01<00:00, 16.00it/s]100%|██████████| 27/27 [00:01<00:00, 17.40it/s]
+Submission ZIP created: submissions/eval/task1_baseline_eval_Nu_Analytics_both.zip
+ZIP contents: ['task_1.jsonl']
+Submission is ready.
+=== Overall ===
+INFO: Loading Labels...
+INFO: Evaluating 92 instances...
+Overall metrics
+Micro : P=0.7360 R=0.8788 F1=0.8011
+Macro : P=0.7169 R=0.8041 F1=0.7406
+Weighted : P=0.7502 R=0.8788 F1=0.8053
+Per-label metrics
+              precision    recall  f1-score   support
+
+          AS     0.8718    0.9714    0.9189        70
+          AN     0.6154    0.8276    0.7059        29
+          ST     0.5000    0.8000    0.6154         5
+          TE     0.6071    0.7727    0.6800        22
+          CO     1.0000    0.6000    0.7500         5
+          OT     0.7073    0.8529    0.7733        34
+
+   micro avg     0.7360    0.8788    0.8011       165
+   macro avg     0.7169    0.8041    0.7406       165
+weighted avg     0.7502    0.8788    0.8053       165
+ samples avg     0.6567    0.7899    0.6884       165
+
+
+=== Editorials only ===
+INFO: Loading Labels...
+INFO: Evaluating 37 instances...
+Overall metrics
+Micro : P=0.6806 R=0.8750 F1=0.7656
+Macro : P=0.5776 R=0.7272 F1=0.6387
+Weighted : P=0.6748 R=0.8750 F1=0.7575
+Per-label metrics
+              precision    recall  f1-score   support
+
+          AS     0.8333    0.9615    0.8929        26
+          AN     0.5769    0.9375    0.7143        16
+          ST     0.5000    0.7500    0.6000         4
+          TE     0.5556    0.7143    0.6250         7
+          CO     1.0000    1.0000    1.0000         1
+          OT     0.0000    0.0000    0.0000         2
+
+   micro avg     0.6806    0.8750    0.7656        56
+   macro avg     0.5776    0.7272    0.6387        56
+weighted avg     0.6748    0.8750    0.7575        56
+ samples avg     0.6216    0.7793    0.6610        56
+
+
+=== Debates only ===
+INFO: Loading Labels...
+INFO: Evaluating 55 instances...
+Overall metrics
+Micro : P=0.7680 R=0.8807 F1=0.8205
+Macro : P=0.7378 R=0.8126 F1=0.7435
+Weighted : P=0.7800 R=0.8807 F1=0.8209
+Per-label metrics
+              precision    recall  f1-score   support
+
+          AS     0.8958    0.9773    0.9348        44
+          AN     0.6923    0.6923    0.6923        13
+          ST     0.5000    1.0000    0.6667         1
+          TE     0.6316    0.8000    0.7059        15
+          CO     1.0000    0.5000    0.6667         4
+          OT     0.7073    0.9062    0.7945        32
+
+   micro avg     0.7680    0.8807    0.8205       109
+   macro avg     0.7378    0.8126    0.7435       109
+weighted avg     0.7800    0.8807    0.8209       109
+ samples avg     0.6803    0.7970    0.7068       109
+

@@ -1,0 +1,98 @@
+/home/mount/Repositories/BoostedSpan/.venv/lib/python3.12/site-packages/transformers/utils/hub.py:128: FutureWarning: Using `TRANSFORMERS_CACHE` is deprecated and will be removed in v5 of Transformers. Use `HF_HOME` instead.
+  warnings.warn(
+  0%|          | 0/12 [00:00<?, ?it/s] 50%|█████     | 6/12 [00:00<00:00, 53.82it/s]100%|██████████| 12/12 [00:00<00:00, 36.89it/s]100%|██████████| 12/12 [00:00<00:00, 38.67it/s]
+  0%|          | 0/27 [00:00<?, ?it/s] 15%|█▍        | 4/27 [00:00<00:00, 32.99it/s] 33%|███▎      | 9/27 [00:00<00:00, 36.69it/s] 48%|████▊     | 13/27 [00:00<00:00, 24.97it/s] 59%|█████▉    | 16/27 [00:00<00:00, 18.87it/s] 70%|███████   | 19/27 [00:00<00:00, 18.56it/s] 81%|████████▏ | 22/27 [00:01<00:00, 18.54it/s] 89%|████████▉ | 24/27 [00:01<00:00, 17.47it/s] 96%|█████████▋| 26/27 [00:01<00:00, 17.24it/s]100%|██████████| 27/27 [00:01<00:00, 20.20it/s]
+  0%|          | 0/12 [00:00<?, ?it/s] 25%|██▌       | 3/12 [00:00<00:00, 21.42it/s] 50%|█████     | 6/12 [00:00<00:00, 24.48it/s] 75%|███████▌  | 9/12 [00:00<00:00, 17.70it/s] 92%|█████████▏| 11/12 [00:00<00:00, 16.51it/s]100%|██████████| 12/12 [00:00<00:00, 18.78it/s]
+  0%|          | 0/27 [00:00<?, ?it/s] 11%|█         | 3/27 [00:00<00:00, 25.27it/s] 22%|██▏       | 6/27 [00:00<00:01, 17.29it/s] 33%|███▎      | 9/27 [00:00<00:00, 20.16it/s] 44%|████▍     | 12/27 [00:00<00:00, 19.51it/s] 56%|█████▌    | 15/27 [00:00<00:00, 16.68it/s] 63%|██████▎   | 17/27 [00:00<00:00, 16.83it/s] 70%|███████   | 19/27 [00:01<00:00, 17.29it/s] 78%|███████▊  | 21/27 [00:01<00:00, 17.11it/s] 85%|████████▌ | 23/27 [00:01<00:00, 17.78it/s] 93%|█████████▎| 25/27 [00:01<00:00, 16.65it/s]100%|██████████| 27/27 [00:01<00:00, 17.96it/s]
+  0%|          | 0/12 [00:00<?, ?it/s] 25%|██▌       | 3/12 [00:00<00:00, 25.15it/s] 50%|█████     | 6/12 [00:00<00:00, 27.32it/s] 75%|███████▌  | 9/12 [00:00<00:00, 18.77it/s]100%|██████████| 12/12 [00:00<00:00, 19.45it/s]100%|██████████| 12/12 [00:00<00:00, 20.41it/s]
+  0%|          | 0/27 [00:00<?, ?it/s] 11%|█         | 3/27 [00:00<00:00, 27.76it/s] 22%|██▏       | 6/27 [00:00<00:01, 18.07it/s] 33%|███▎      | 9/27 [00:00<00:00, 20.73it/s] 44%|████▍     | 12/27 [00:00<00:00, 20.31it/s] 56%|█████▌    | 15/27 [00:00<00:00, 17.51it/s] 67%|██████▋   | 18/27 [00:00<00:00, 18.77it/s] 74%|███████▍  | 20/27 [00:01<00:00, 18.92it/s] 85%|████████▌ | 23/27 [00:01<00:00, 20.00it/s] 96%|█████████▋| 26/27 [00:01<00:00, 17.97it/s]100%|██████████| 27/27 [00:01<00:00, 19.25it/s]
+  0%|          | 0/12 [00:00<?, ?it/s] 25%|██▌       | 3/12 [00:00<00:00, 25.97it/s] 50%|█████     | 6/12 [00:00<00:00, 26.78it/s] 75%|███████▌  | 9/12 [00:00<00:00, 17.65it/s]100%|██████████| 12/12 [00:00<00:00, 18.18it/s]100%|██████████| 12/12 [00:00<00:00, 19.30it/s]
+  0%|          | 0/27 [00:00<?, ?it/s] 11%|█         | 3/27 [00:00<00:00, 26.50it/s] 22%|██▏       | 6/27 [00:00<00:01, 18.90it/s] 33%|███▎      | 9/27 [00:00<00:00, 22.58it/s] 44%|████▍     | 12/27 [00:00<00:00, 22.22it/s] 56%|█████▌    | 15/27 [00:00<00:00, 18.80it/s] 67%|██████▋   | 18/27 [00:00<00:00, 19.07it/s] 78%|███████▊  | 21/27 [00:01<00:00, 18.58it/s] 85%|████████▌ | 23/27 [00:01<00:00, 18.83it/s] 93%|█████████▎| 25/27 [00:01<00:00, 16.97it/s]100%|██████████| 27/27 [00:01<00:00, 19.15it/s]
+Submission ZIP created: submissions/eval/task1_boosted_eval_Nu_Analytics_both.zip
+ZIP contents: ['task_1.jsonl']
+Submission is ready.
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/abdelrahman/.netrc.
+wandb: Currently logged in as: abdelrahman350 to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: WARNING Using a boolean value for 'reinit' is deprecated. Use 'return_previous' or 'finish_previous' instead.
+wandb: setting up run i7w55wz3
+wandb: Tracking run with wandb version 0.28.1
+wandb: Run data is saved locally in /home/mount/Repositories/BoostedSpan/wandb/run-20260729_174252-i7w55wz3
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run task1_boosted_ensemble
+wandb: ⭐️ View project at https://wandb.ai/abdelrahman350/sanad-argmining
+wandb: 🚀 View run at https://wandb.ai/abdelrahman350/sanad-argmining/runs/i7w55wz3
+=== Overall ===
+INFO: Loading Labels...
+INFO: Evaluating 92 instances...
+Overall metrics
+Micro : P=0.8111 R=0.8848 F1=0.8464
+Macro : P=0.7900 R=0.7754 F1=0.7721
+Weighted : P=0.8154 R=0.8848 F1=0.8454
+Per-label metrics
+              precision    recall  f1-score   support
+
+          AS     0.8961    0.9857    0.9388        70
+          AN     0.8276    0.8276    0.8276        29
+          ST     0.6000    0.6000    0.6000         5
+          TE     0.6957    0.7273    0.7111        22
+          CO     1.0000    0.6000    0.7500         5
+          OT     0.7209    0.9118    0.8052        34
+
+   micro avg     0.8111    0.8848    0.8464       165
+   macro avg     0.7900    0.7754    0.7721       165
+weighted avg     0.8154    0.8848    0.8454       165
+ samples avg     0.7514    0.8266    0.7609       165
+
+
+=== Editorials only ===
+INFO: Loading Labels...
+INFO: Evaluating 37 instances...
+Overall metrics
+Micro : P=0.8136 R=0.8571 F1=0.8348
+Macro : P=0.6642 R=0.7168 F1=0.6884
+Weighted : P=0.7868 R=0.8571 F1=0.8200
+Per-label metrics
+              precision    recall  f1-score   support
+
+          AS     0.8929    0.9615    0.9259        26
+          AN     0.7778    0.8750    0.8235        16
+          ST     0.6000    0.7500    0.6667         4
+          TE     0.7143    0.7143    0.7143         7
+          CO     1.0000    1.0000    1.0000         1
+          OT     0.0000    0.0000    0.0000         2
+
+   micro avg     0.8136    0.8571    0.8348        56
+   macro avg     0.6642    0.7168    0.6884        56
+weighted avg     0.7868    0.8571    0.8200        56
+ samples avg     0.7748    0.8086    0.7664        56
+
+
+=== Debates only ===
+INFO: Loading Labels...
+INFO: Evaluating 55 instances...
+Overall metrics
+Micro : P=0.8099 R=0.8991 F1=0.8522
+Macro : P=0.7026 R=0.6619 F1=0.6638
+Weighted : P=0.8139 R=0.8991 F1=0.8462
+Per-label metrics
+              precision    recall  f1-score   support
+
+          AS     0.8980    1.0000    0.9462        44
+          AN     0.9091    0.7692    0.8333        13
+          ST     0.0000    0.0000    0.0000         1
+          TE     0.6875    0.7333    0.7097        15
+          CO     1.0000    0.5000    0.6667         4
+          OT     0.7209    0.9688    0.8267        32
+
+   micro avg     0.8099    0.8991    0.8522       109
+   macro avg     0.7026    0.6619    0.6638       109
+weighted avg     0.8139    0.8991    0.8462       109
+ samples avg     0.7358    0.8388    0.7572       109
+
+wandb: updating run metadata; uploading console lines 0-0
+wandb: uploading wandb-metadata.json; uploading requirements.txt; uploading output.log; uploading wandb-summary.json; uploading config.yaml
+wandb: uploading summary, console lines 1-66
+wandb: 🚀 View run task1_boosted_ensemble at: https://wandb.ai/abdelrahman350/sanad-argmining/runs/i7w55wz3
+wandb: ⭐️ View project at: https://wandb.ai/abdelrahman350/sanad-argmining
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20260729_174252-i7w55wz3/logs

@@ -452,7 +452,15 @@ def _write_and_score(
             team_name=config.submission.team_name,
             training_setting=config.submission.training_setting,
             output_dir=f"submissions/{config.submission.phase}",
-            run_label=f"{config.task}_{config.variant}",
+            # Derived from output_dir's basename, not f"{config.task}_{config.variant}"
+            # -- config.variant is legitimately shared/overloaded across sibling
+            # configs (e.g. enhanced_track_a_v2.yaml keeps variant: enhanced_track_a
+            # so its main() dispatch/postprocess-flag/k-fold-guard stay unchanged),
+            # which silently collided two configs onto the same zip filename,
+            # overwriting one's submission with the other's. output_dir is already
+            # required to be unique per config (that's how their checkpoints/
+            # predictions avoid colliding on disk), so it's a safe key.
+            run_label=Path(config.output_dir).name,
         )
 
     tracker = RunTracker(config.wandb, f"{config.task}_{config.variant}_ensemble", run_config={"variant": config.variant})
