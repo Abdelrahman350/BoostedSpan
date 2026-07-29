@@ -70,6 +70,7 @@ from postprocessing.spans import (
 )
 from pretraining.tapt import run_tapt
 from text.cues import build_input_text
+from utils.checkpointing import save_best_and_last_checkpoints
 from utils.config import Config, SpanScorerConfig, load_config
 from utils.logging import install_rounded_logging
 from utils.tracking import RunTracker, make_trainer_callback
@@ -299,7 +300,7 @@ def train_task2_model(
         warmup_ratio=config.training.warmup_ratio,
         eval_strategy="epoch" if save_best else "no",
         save_strategy="epoch" if save_best else "no",
-        save_total_limit=1 if save_best else None,
+        save_total_limit=2 if save_best else None,
         load_best_model_at_end=save_best,
         metric_for_best_model="f1_macro" if save_best else None,
         greater_is_better=True if save_best else None,
@@ -323,9 +324,7 @@ def train_task2_model(
         # config.json/save_pretrained support) -- reloading it means reconstructing
         # TokenClassifierWithCRF(checkpoint, num_labels=...) and calling
         # load_state_dict() manually, unlike Task 1's full HF checkpoint.
-        checkpoint_dir = f"{output_dir}/checkpoint"
-        trainer.save_model(checkpoint_dir)
-        tokenizer.save_pretrained(checkpoint_dir)
+        save_best_and_last_checkpoints(trainer, tokenizer, output_dir)
 
     model.eval()
     val_spans = {
@@ -476,7 +475,7 @@ def train_span_scorer_model(
         warmup_ratio=config.training.warmup_ratio,
         eval_strategy="epoch" if save_best else "no",
         save_strategy="epoch" if save_best else "no",
-        save_total_limit=1 if save_best else None,
+        save_total_limit=2 if save_best else None,
         load_best_model_at_end=save_best,
         metric_for_best_model="f1_macro" if save_best else None,
         greater_is_better=True if save_best else None,
@@ -497,9 +496,7 @@ def train_span_scorer_model(
     if save_best:
         # SpanScorerModel is a bare nn.Module, not a HF PreTrainedModel -- same
         # state_dict-only caveat as TokenClassifierWithCRF (see train_task2_model).
-        checkpoint_dir = f"{output_dir}/checkpoint"
-        trainer.save_model(checkpoint_dir)
-        tokenizer.save_pretrained(checkpoint_dir)
+        save_best_and_last_checkpoints(trainer, tokenizer, output_dir)
 
     model.eval()
     val_spans = {
@@ -583,7 +580,7 @@ def train_boundary_stage(backbone_id: str, seed: int, config: Config, tapt_cache
         warmup_ratio=stage_a_cfg.warmup_ratio,
         eval_strategy="epoch" if save_best else "no",
         save_strategy="epoch" if save_best else "no",
-        save_total_limit=1 if save_best else None,
+        save_total_limit=2 if save_best else None,
         load_best_model_at_end=save_best,
         metric_for_best_model="f1_macro" if save_best else None,
         greater_is_better=True if save_best else None,
@@ -598,9 +595,7 @@ def train_boundary_stage(backbone_id: str, seed: int, config: Config, tapt_cache
     trainer.train()
 
     if save_best:
-        checkpoint_dir = f"{output_dir}/checkpoint"
-        trainer.save_model(checkpoint_dir)
-        tokenizer.save_pretrained(checkpoint_dir)
+        save_best_and_last_checkpoints(trainer, tokenizer, output_dir)
 
     model.eval()
 
@@ -652,7 +647,7 @@ def train_span_type_stage(backbone_id: str, seed: int, config: Config, tapt_cach
         warmup_ratio=stage_b_cfg.warmup_ratio,
         eval_strategy="epoch" if save_best else "no",
         save_strategy="epoch" if save_best else "no",
-        save_total_limit=1 if save_best else None,
+        save_total_limit=2 if save_best else None,
         load_best_model_at_end=save_best,
         metric_for_best_model="f1_macro" if save_best else None,
         greater_is_better=True if save_best else None,
@@ -669,9 +664,7 @@ def train_span_type_stage(backbone_id: str, seed: int, config: Config, tapt_cach
     trainer.train()
 
     if save_best:
-        checkpoint_dir = f"{output_dir}/checkpoint"
-        trainer.save_model(checkpoint_dir)
-        tokenizer.save_pretrained(checkpoint_dir)
+        save_best_and_last_checkpoints(trainer, tokenizer, output_dir)
 
     model.eval()
 

@@ -44,9 +44,11 @@ wandb:
   enabled: true
   project: sanad-argmining
 
-# Set enabled: true and team_name to package outputs/task2_enhanced_track_a/task_2.jsonl
-# into a "{team_name}_{training_setting}.zip" submission at the end of the run.
+# Left disabled: this run only predicts on dev_in.jsonl (the practice/dev-phase set),
+# never test_in.jsonl (the real Evaluation-phase set) -- the actual submission is
+# generated separately via predict_eval.py against test_in.jsonl once training
+# finishes. Flip to true only if you specifically want a dev-phase dry-run zip.
 submission:
-  enabled: true
+  enabled: false
   team_name: Nu_Analytics
   training_setting: both

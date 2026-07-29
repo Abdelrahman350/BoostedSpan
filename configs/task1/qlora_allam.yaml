@@ -30,9 +30,13 @@ training:
   learning_rate: 2.0e-4
   weight_decay: 0.01
   warmup_ratio: 0.1
-  # No per-epoch best-checkpoint selection for this variant (see
-  # train_task1_generative.py's train_one_qlora_run) -- always saves the final epoch.
-  save_best_checkpoint: false
+  # Validation-driven best/last tracking for this variant: an on_epoch_end callback
+  # runs score_labels_via_logits over the val split each epoch and keeps the
+  # best-F1 adapter state in memory alongside the final ("last") epoch's adapter
+  # (see train_task1_generative.py's make_qlora_best_adapter_callback). Adds one
+  # extra full val-set eval pass per epoch on top of training -- real cost on a 7B
+  # model, but targets generalization instead of just keeping the final epoch.
+  save_best_checkpoint: true
 
 data:
   discourse_cues: true

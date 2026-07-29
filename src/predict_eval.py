@@ -87,7 +87,7 @@ def _device() -> str:
 
 def reload_task1_encoder_run(backbone_id: str, seed: int, config: Config, split, test_rows: list[dict]) -> RunResult:
     safe_name = backbone_id.replace("/", "__")
-    checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}/checkpoint"
+    checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}/checkpoint_best"
 
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
     model = AutoModelForSequenceClassification.from_pretrained(checkpoint_dir)
@@ -118,7 +118,7 @@ def reload_qlora_run(backbone_id: str, seed: int, config: Config, split, test_ro
     from peft import PeftModel
 
     safe_name = backbone_id.replace("/", "__")
-    checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}/checkpoint"
+    checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}/checkpoint_best"
     quant_cfg = config.quantization
 
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
@@ -164,7 +164,7 @@ def run_task1_eval(config: Config, split, test_rows: list[dict], eval_config: Co
 
 def reload_task2_track_a_run(backbone_id: str, seed: int, config: Config, split, test_rows: list[dict]) -> Task2RunResult:
     safe_name = backbone_id.replace("/", "__")
-    checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}/checkpoint"
+    checkpoint_dir = f"{config.output_dir}/runs/{safe_name}_seed{seed}/checkpoint_best"
     base = resolve_base_checkpoint(backbone_id, config)
     tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
     device = _device()
@@ -239,14 +239,14 @@ def run_task2_track_b_eval(config: Config, split, test_rows: list[dict], eval_co
     base = resolve_base_checkpoint(backbone_id, config)
     device = _device()
 
-    boundary_dir = f"{config.output_dir}/runs/boundary/checkpoint"
+    boundary_dir = f"{config.output_dir}/runs/boundary/checkpoint_best"
     boundary_tokenizer = AutoTokenizer.from_pretrained(boundary_dir)
     boundary_model = TokenClassifierWithCRF(base, num_labels=len(ARG_BIO_TAGS))
     load_custom_state_dict(boundary_model, boundary_dir)
     boundary_model.to(device)
     boundary_model.eval()
 
-    span_type_dir = f"{config.output_dir}/runs/span_type/checkpoint"
+    span_type_dir = f"{config.output_dir}/runs/span_type/checkpoint_best"
     span_type_tokenizer = AutoTokenizer.from_pretrained(span_type_dir)
     span_type_model = SpanTypeClassifier(base, num_types=len(LABELS))
     load_custom_state_dict(span_type_model, span_type_dir)

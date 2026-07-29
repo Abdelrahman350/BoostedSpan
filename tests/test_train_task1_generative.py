@@ -14,7 +14,12 @@ import torch
 
 from data.loading import LABELS
 from train_task1 import RunResult, ensemble_and_score
-from train_task1_generative import build_generative_prompt, build_sft_example, score_labels_via_logits
+from train_task1_generative import (
+    _BestAdapterState,
+    build_generative_prompt,
+    build_sft_example,
+    score_labels_via_logits,
+)
 
 
 def test_build_generative_prompt_includes_domain_and_cues():
@@ -112,6 +117,33 @@ def test_score_labels_via_logits_shape_and_range():
     assert np.all((probs >= 0) & (probs <= 1))
     # "yes" logit (2.0) > "no" logit (0.5) at every probed position -> P(yes) > 0.5 for every label
     assert np.all(probs > 0.5)
+
+
+def test_best_adapter_state_tracks_highest_f1():
+    tracker = _BestAdapterState()
+    assert tracker.maybe_update(0.5, {"w": torch.tensor([1.0])}) is True
+    assert tracker.maybe_update(0.3, {"w": torch.tensor([2.0])}) is False
+    assert tracker.maybe_update(0.7, {"w": torch.tensor([3.0])}) is True
+
+    assert tracker.best_f1 == 0.7
+    assert torch.equal(tracker.best_state["w"], torch.tensor([3.0]))
+
+
+def test_best_adapter_state_ties_dont_overwrite():
+    tracker = _BestAdapterState()
+    tracker.maybe_update(0.5, {"w": torch.tensor([1.0])})
+    assert tracker.maybe_update(0.5, {"w": torch.tensor([99.0])}) is False
+    assert torch.equal(tracker.best_state["w"], torch.tensor([1.0]))
+
+
+def test_best_adapter_state_clones_are_mutation_safe():
+    tracker = _BestAdapterState()
+    live_state = {"w": torch.tensor([1.0])}
+    tracker.maybe_update(0.5, live_state)
+
+    live_state["w"] += 100.0  # mutating the source after the fact must not corrupt the stored best
+
+    assert torch.equal(tracker.best_state["w"], torch.tensor([1.0]))
 
 
 _DATA_DIR = "data/raw/Daleel2026"

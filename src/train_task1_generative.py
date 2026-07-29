@@ -25,6 +25,7 @@ import gc
 import numpy as np
 import torch
 from datasets import Dataset
+from sklearn.metrics import f1_score
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Trainer, TrainingArguments
 
 from data.loading import LABELS, build_shared_split, load_dev_in, load_task1, load_task2
@@ -147,6 +148,49 @@ def score_labels_via_logits(text: str, domain: str, model, tokenizer, max_len: i
     return np.array(probs)
 
 
+class _BestAdapterState:
+    """In-memory best-epoch tracker for the QLoRA path, where score_labels_via_logits'
+    many-forward-passes-per-row shape doesn't fit Trainer's batched compute_metrics
+    interface (see train_one_qlora_run). PEFT adapters are small enough to keep a
+    full clone in memory rather than round-tripping through disk every epoch."""
+
+    def __init__(self):
+        self.best_f1 = float("-inf")
+        self.best_state: dict[str, torch.Tensor] | None = None
+
+    def maybe_update(self, f1: float, state_dict: dict[str, torch.Tensor]) -> bool:
+        if f1 > self.best_f1:
+            self.best_f1 = f1
+            self.best_state = {k: v.detach().cpu().clone() for k, v in state_dict.items()}
+            return True
+        return False
+
+
+def _qlora_val_f1(model, tokenizer, val_rows: list[dict], max_len: int, discourse_cues: bool) -> float:
+    """Per-epoch proxy for best-adapter selection: macro F1 at a fixed 0.5 threshold
+    over score_labels_via_logits' P(yes) outputs -- same shape as
+    train_task1.compute_task1_metrics, just computed outside Trainer's eval loop."""
+    val_probs = np.stack(
+        [score_labels_via_logits(r["text"], r["type"], model, tokenizer, max_len, discourse_cues) for r in val_rows]
+    )
+    val_gold = np.array([[1.0 if l in r["labels"] else 0.0 for l in LABELS] for r in val_rows])
+    return f1_score(val_gold, (val_probs > 0.5).astype(int), average="macro", zero_division=0)
+
+
+def make_qlora_best_adapter_callback(tokenizer, val_rows: list[dict], max_len: int, discourse_cues: bool, tracker: _BestAdapterState):
+    from peft import get_peft_model_state_dict
+    from transformers import TrainerCallback
+
+    class _BestAdapterCallback(TrainerCallback):
+        def on_epoch_end(self, args, state, control, model=None, **kwargs):
+            model.eval()
+            f1 = _qlora_val_f1(model, tokenizer, val_rows, max_len, discourse_cues)
+            tracker.maybe_update(f1, get_peft_model_state_dict(model))
+            model.train()
+
+    return _BestAdapterCallback()
+
+
 def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_in: list[dict], output_dir: str) -> RunResult:
     if config.tapt.enabled:
         raise ValueError(
@@ -195,11 +239,13 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
     tracker = RunTracker(config.wandb, run_name, run_config={"backbone": backbone_id, "seed": seed, "variant": config.variant})
 
     # No per-epoch eval_strategy/load_best_model_at_end here, unlike this repo's other
-    # variants: "best checkpoint" would need score_labels_via_logits (many per-paragraph
-    # forward passes) run inside HF Trainer's per-epoch eval hook, which doesn't fit the
-    # standard batch-forward compute_metrics interface used elsewhere in this repo. A
-    # disclosed simplification: this variant always saves the FINAL epoch's adapter,
-    # not a per-epoch-selected best one.
+    # variants: score_labels_via_logits (many per-paragraph forward passes) doesn't fit
+    # the standard batch-forward compute_metrics interface. Instead, when save_best is
+    # true, an on_epoch_end callback runs that eval manually and tracks the best
+    # in-memory adapter state (see make_qlora_best_adapter_callback / _BestAdapterState)
+    # -- PEFT adapters are small enough to keep a full clone in memory across epochs.
+    save_best = config.training.save_best_checkpoint
+    best_state = _BestAdapterState()
     args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=config.training.epochs,
@@ -215,19 +261,38 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
         seed=seed,
         report_to=[],
     )
+    callbacks = [make_trainer_callback(tracker)] if config.wandb.enabled else []
+    if save_best:
+        callbacks.append(
+            make_qlora_best_adapter_callback(
+                tokenizer, split.task1_val, config.model.max_seq_len, config.data.discourse_cues, best_state
+            )
+        )
     trainer = Trainer(
         model=model, args=args, train_dataset=train_ds, data_collator=collator,
-        callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
+        callbacks=callbacks or None,
     )
     install_rounded_logging(trainer)
     trainer.train()
 
     # PEFT adapter-only save (tens of MB), not a merged model (~14GB fp16) -- reload
     # via PeftModel.from_pretrained(base_model, adapter_dir).
-    checkpoint_dir = f"{output_dir}/checkpoint"
-    model.save_pretrained(checkpoint_dir)
-    tokenizer.save_pretrained(checkpoint_dir)
+    # model currently holds the final epoch's weights ("last").
+    model.save_pretrained(f"{output_dir}/checkpoint_last")
+    tokenizer.save_pretrained(f"{output_dir}/checkpoint_last")
 
+    if save_best:
+        from peft import set_peft_model_state_dict
+
+        # Fall back to the final epoch's state if no epoch ever beat float("-inf")
+        # (e.g. num_train_epochs=0 in a smoke test) -- best_state.best_state stays None.
+        if best_state.best_state is not None:
+            set_peft_model_state_dict(model, best_state.best_state)
+        model.save_pretrained(f"{output_dir}/checkpoint_best")
+        tokenizer.save_pretrained(f"{output_dir}/checkpoint_best")
+
+    # Predictions (and therefore ensembling/threshold-sweep/submission) always come
+    # from the best adapter when save_best is enabled, matching the encoder paths.
     model.eval()
     val_probs = np.stack(
         [score_labels_via_logits(r["text"], r["type"], model, tokenizer, config.model.max_seq_len, config.data.discourse_cues) for r in split.task1_val]

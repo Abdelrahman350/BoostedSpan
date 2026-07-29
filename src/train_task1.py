@@ -31,6 +31,7 @@ from evaluation.submission import write_submission_zip
 from models.losses import get_task1_loss_fn, weighted_bce_pos_weight
 from pretraining.tapt import run_tapt
 from text.cues import build_input_text
+from utils.checkpointing import save_best_and_last_checkpoints
 from utils.config import Config, load_config
 from utils.logging import install_rounded_logging
 from utils.tracking import RunTracker, make_trainer_callback
@@ -140,7 +141,7 @@ def train_one_run(
         warmup_ratio=config.training.warmup_ratio,
         eval_strategy="epoch",
         save_strategy="epoch" if save_best else "no",
-        save_total_limit=1 if save_best else None,
+        save_total_limit=2 if save_best else None,
         load_best_model_at_end=save_best,
         metric_for_best_model="f1_macro" if save_best else None,
         greater_is_better=True if save_best else None,
@@ -163,12 +164,7 @@ def train_one_run(
     trainer.train()
 
     if save_best:
-        # trainer.model now holds the best epoch's weights (load_best_model_at_end);
-        # save a clean, stably-named copy rather than relying on HF's numbered
-        # checkpoint-<step> directory.
-        checkpoint_dir = f"{output_dir}/checkpoint"
-        trainer.save_model(checkpoint_dir)
-        tokenizer.save_pretrained(checkpoint_dir)
+        save_best_and_last_checkpoints(trainer, tokenizer, output_dir)
 
     val_logits = trainer.predict(val_ds).predictions
     val_probs = 1 / (1 + np.exp(-val_logits))
