@@ -24,11 +24,13 @@ import gc
 
 import numpy as np
 import torch
+import torch.nn as nn
 from datasets import Dataset
 from sklearn.metrics import f1_score
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Trainer, TrainingArguments
 
 from data.loading import LABELS, build_shared_split, load_dev_in, load_task1, load_task2
+from models.losses import weighted_bce_pos_weight
 from text.cues import CUE_PATTERNS
 from train_task1 import RunResult, ensemble_and_score
 from utils.config import Config, load_config
@@ -73,35 +75,58 @@ def build_generative_prompt(text: str, domain: str, label: str, discourse_cues: 
     )
 
 
-def build_sft_example(tokenizer, prompt: str, completion: str, max_len: int) -> dict:
+def build_sft_example(tokenizer, prompt: str, completion: str, max_len: int, weight: float = 1.0) -> dict:
     """Loss only on completion tokens (-100 on the prompt, this repo's existing
     ignore-index convention -- see BIO's -100 usage elsewhere). Tokenizes the prompt
     alone to get its exact token count, then the full prompt+completion string,
     slicing at that boundary -- an approximation since tokenization near a boundary
     can shift by a token or two versus tokenizing the pieces jointly; acceptable here
     since we only need an approximate split, not exact alignment.
+
+    `weight` is carried through unused by plain Trainer (default 1.0, harmless) --
+    only WeightedQLoRATrainer (class_balanced_sft) reads it.
     """
     prompt_ids = tokenizer(prompt, add_special_tokens=True)["input_ids"]
     full_ids = tokenizer(prompt + completion, add_special_tokens=True, truncation=True, max_length=max_len)["input_ids"]
     n_prompt = min(len(prompt_ids), len(full_ids))
     labels = [-100] * n_prompt + full_ids[n_prompt:]
-    return {"input_ids": full_ids, "attention_mask": [1] * len(full_ids), "labels": labels}
+    return {"input_ids": full_ids, "attention_mask": [1] * len(full_ids), "labels": labels, "weight": weight}
 
 
-def build_generative_sft_dataset(tokenizer, rows: list[dict], max_len: int, discourse_cues: bool) -> list[dict]:
+def build_generative_sft_dataset(
+    tokenizer, rows: list[dict], max_len: int, discourse_cues: bool, class_balanced: bool = False
+) -> list[dict]:
     """One training example per (paragraph, label) pair -- completion is the gold
     yes/no answer token for that label, matching how score_labels_via_logits later
-    probes each label independently at inference."""
+    probes each label independently at inference.
+
+    class_balanced=True attaches a per-example loss weight (models/losses.py's
+    weighted_bce_pos_weight, same clipped-inverse-frequency formula the encoder
+    path already uses) -- >1x for a label's minority-positive answer (e.g. CO/ST's
+    "yes"), <1x for a label's majority-positive answer (e.g. AS's "yes", where "no"
+    is actually the minority -- pos_weight naturally comes out <1 there, correctly
+    downweighting AS's dominant class instead of only ever upweighting rarity).
+    """
+    pos_weight = weighted_bce_pos_weight(rows, LABELS, clip=8.0) if class_balanced else None
     examples = []
     for r in rows:
-        for label in LABELS:
+        for i, label in enumerate(LABELS):
             prompt = build_generative_prompt(r["text"], r["type"], label, discourse_cues)
-            answer = " نعم" if label in r["labels"] else " لا"
-            examples.append(build_sft_example(tokenizer, prompt, answer, max_len))
+            is_yes = label in r["labels"]
+            answer = " نعم" if is_yes else " لا"
+            weight = float(pos_weight[i]) if (class_balanced and is_yes) else 1.0
+            examples.append(build_sft_example(tokenizer, prompt, answer, max_len, weight=weight))
     return examples
 
 
-def make_generative_collate_fn(tokenizer):
+def make_generative_collate_fn(tokenizer, include_weight: bool = False):
+    """include_weight=False (default) keeps the exact original output shape --
+    important because plain Trainer's default compute_loss calls model(**inputs)
+    directly with no key-filtering, so an unexpected "weight" kwarg would raise
+    TypeError against AutoModelForCausalLM.forward (same failure mode as CLAUDE.md
+    section 8 bug 2). Only WeightedQLoRATrainer's path needs it, and only that path
+    passes include_weight=True."""
+
     def collate_fn(batch):
         max_len = max(len(b["input_ids"]) for b in batch)
         pad_id = tokenizer.pad_token_id
@@ -113,7 +138,10 @@ def make_generative_collate_fn(tokenizer):
             input_ids[i, :n] = torch.tensor(b["input_ids"], dtype=torch.long)
             attention_mask[i, :n] = torch.tensor(b["attention_mask"], dtype=torch.long)
             labels[i, :n] = torch.tensor(b["labels"], dtype=torch.long)
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+        out = {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+        if include_weight:
+            out["weight"] = torch.tensor([b.get("weight", 1.0) for b in batch], dtype=torch.float32)
+        return out
 
     return collate_fn
 
@@ -191,6 +219,36 @@ def make_qlora_best_adapter_callback(tokenizer, val_rows: list[dict], max_len: i
     return _BestAdapterCallback()
 
 
+class WeightedQLoRATrainer(Trainer):
+    """Plain Trainer's default compute_loss passes labels straight into the causal
+    LM, which computes its own internal unweighted mean cross-entropy -- no way to
+    inject a per-example weight there. Instead: forward with labels=None (skip the
+    model's internal loss), replicate the standard causal-LM shift manually
+    (predict token t from the logits at t-1), per-token CrossEntropyLoss(reduction=
+    "none") (naturally 0 at -100-masked prompt positions), sum per example, divide
+    by that example's non-masked token count (so answer-length doesn't bias the
+    loss scale), multiply by the example's weight (build_generative_sft_dataset's
+    class-balanced pos_weight), mean over the batch."""
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        weight = inputs.pop("weight")
+        labels = inputs["labels"]
+        outputs = model(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"])
+        logits = outputs.logits
+
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        per_token_loss = nn.functional.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), ignore_index=-100, reduction="none"
+        ).view(shift_labels.shape)
+
+        n_supervised = (shift_labels != -100).sum(dim=1).clamp(min=1)
+        per_example_loss = per_token_loss.sum(dim=1) / n_supervised
+        loss = (per_example_loss * weight).mean()
+
+        return (loss, outputs) if return_outputs else loss
+
+
 def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_in: list[dict], output_dir: str) -> RunResult:
     if config.tapt.enabled:
         raise ValueError(
@@ -231,9 +289,12 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
     if config.model.gradient_checkpointing:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
-    train_examples = build_generative_sft_dataset(tokenizer, split.task1_train, config.model.max_seq_len, config.data.discourse_cues)
+    class_balanced = config.model.class_balanced_sft
+    train_examples = build_generative_sft_dataset(
+        tokenizer, split.task1_train, config.model.max_seq_len, config.data.discourse_cues, class_balanced=class_balanced
+    )
     train_ds = Dataset.from_list(train_examples)
-    collator = make_generative_collate_fn(tokenizer)
+    collator = make_generative_collate_fn(tokenizer, include_weight=class_balanced)
 
     run_name = f"{config.task}_{config.variant}_{backbone_id.replace('/', '__')}_{seed}"
     tracker = RunTracker(config.wandb, run_name, run_config={"backbone": backbone_id, "seed": seed, "variant": config.variant})
@@ -268,7 +329,8 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
                 tokenizer, split.task1_val, config.model.max_seq_len, config.data.discourse_cues, best_state
             )
         )
-    trainer = Trainer(
+    trainer_cls = WeightedQLoRATrainer if class_balanced else Trainer
+    trainer = trainer_cls(
         model=model, args=args, train_dataset=train_ds, data_collator=collator,
         callbacks=callbacks or None,
     )

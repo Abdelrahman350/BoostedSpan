@@ -5,9 +5,10 @@ subclassing needed.
 
 from __future__ import annotations
 
+import torch
 import torch.nn as nn
 from torchcrf import CRF
-from transformers import AutoModel
+from transformers import AutoModel, Trainer
 
 
 class TokenClassifierWithCRF(nn.Module):
@@ -40,3 +41,44 @@ class TokenClassifierWithCRF(nn.Module):
         emissions = self.classifier(outputs.last_hidden_state)
         mask = attention_mask.bool()
         return self.crf.decode(emissions, mask=mask), emissions
+
+
+def bio_class_weights_from_span_weights(span_weights: torch.Tensor, labels: list[str], bio2id: dict[str, int]) -> torch.Tensor:
+    """Expands models/span_scorer.py's span_class_weights (indexed ["O"] + labels,
+    length len(labels)+1) into a BIO_TAGS-indexed tensor (length 2*len(labels)+1):
+    "O" keeps span_weights[0], both "B-<label>" and "I-<label>" get the same
+    per-label weight span_weights[i+1] -- the CRF's tag-transition structure
+    already distinguishes B/I, this only weights which TYPE of content a tag is."""
+    weights = torch.ones(len(bio2id), dtype=span_weights.dtype)
+    weights[bio2id["O"]] = span_weights[0]
+    for i, label in enumerate(labels):
+        weights[bio2id[f"B-{label}"]] = span_weights[i + 1]
+        weights[bio2id[f"I-{label}"]] = span_weights[i + 1]
+    return weights
+
+
+class WeightedCRFTrainer(Trainer):
+    """TokenClassifierWithCRF's own loss (self.crf's sequence log-likelihood) has no
+    per-tag class weighting -- rare labels (CO/ST) get diluted gradient signal
+    purely from rarity. Adds a second, per-tag-weighted token-level cross-entropy
+    term over the SAME emissions already computed in one forward pass (no extra
+    encoder pass) alongside the CRF's own loss, rather than replacing it."""
+
+    def __init__(self, *args, bio_class_weights: torch.Tensor, aux_ce_weight: float, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.bio_class_weights = bio_class_weights
+        self.aux_ce_weight = aux_ce_weight
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs["labels"]
+        outputs = model(**inputs)
+        emissions = outputs["logits"]
+
+        aux_ce = nn.functional.cross_entropy(
+            emissions.view(-1, emissions.size(-1)),
+            labels.view(-1),
+            weight=self.bio_class_weights.to(emissions.device),
+            ignore_index=-100,
+        )
+        loss = outputs["loss"] + self.aux_ce_weight * aux_ce
+        return (loss, outputs) if return_outputs else loss

@@ -45,7 +45,7 @@ from data.loading import (
 )
 from evaluation.scoring import corpus_partial_overlap_f1, score_task2
 from evaluation.submission import write_submission_zip
-from models.crf_tagger import TokenClassifierWithCRF
+from models.crf_tagger import TokenClassifierWithCRF, WeightedCRFTrainer, bio_class_weights_from_span_weights
 from models.span_scorer import (
     SpanScorerModel,
     SpanScorerTrainer,
@@ -311,11 +311,22 @@ def train_task2_model(
         seed=seed,
         report_to=[],
     )
-    trainer = Trainer(
-        model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds if save_best else None, data_collator=collator,
-        compute_metrics=compute_token_classification_metrics if save_best else None,
-        callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
-    )
+    use_aux_ce = config.model.use_crf and config.model.use_aux_ce
+    if use_aux_ce:
+        span_weights = span_class_weights(split.task2_train, config.model.aux_ce_clip)
+        bio_weights = bio_class_weights_from_span_weights(span_weights, LABELS, bio2id)
+        trainer = WeightedCRFTrainer(
+            model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds if save_best else None, data_collator=collator,
+            compute_metrics=compute_token_classification_metrics if save_best else None,
+            callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
+            bio_class_weights=bio_weights, aux_ce_weight=config.model.aux_ce_weight,
+        )
+    else:
+        trainer = Trainer(
+            model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds if save_best else None, data_collator=collator,
+            compute_metrics=compute_token_classification_metrics if save_best else None,
+            callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
+        )
     install_rounded_logging(trainer)
     trainer.train()
 

@@ -33,6 +33,10 @@ class ModelConfig:
     asl_gamma_pos: float = 1.0
     asl_gamma_neg: float = 4.0
     asl_clip: float = 0.05
+    # task1 qlora_allam-only: class-balanced per-example loss weighting for the SFT
+    # yes/no rank-classification objective (see train_task1_generative.py's
+    # WeightedQLoRATrainer). Ignored everywhere else.
+    class_balanced_sft: bool = False
     # task2-specific (ignored for task1 configs)
     stride: int = 64
     use_crf: bool = False
@@ -43,6 +47,13 @@ class ModelConfig:
     contrastive_enabled: bool = False
     contrastive_weight: float = 0.1
     contrastive_temperature: float = 0.1
+    # task2 CRF variants only (baseline/boosted_crf/enhanced_track_a) -- adds a
+    # per-tag class-weighted auxiliary cross-entropy alongside the CRF's own
+    # unweighted sequence log-likelihood (models/crf_tagger.py's WeightedCRFTrainer).
+    # Ignored everywhere else.
+    use_aux_ce: bool = False
+    aux_ce_weight: float = 0.3
+    aux_ce_clip: float = 20.0
 
 
 @dataclass
