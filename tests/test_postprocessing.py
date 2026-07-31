@@ -1,11 +1,99 @@
 from postprocessing.spans import (
+    cluster_ensemble_decode_spans,
     is_word_char,
     merge_adjacent_same_label,
+    min_weight_for_fraction,
     postprocess_spans,
     snap_to_word_boundary,
     spans_from_char_to_tag,
     strip_non_content_spans,
 )
+
+
+def test_cluster_decode_recovers_boundary_jittered_short_span():
+    # 3 runs each predict roughly the same short span with slightly different
+    # boundaries (the exact failure mode char-voting misses) -- combined weight
+    # (3.0) clears min_weight (2.0), so the union of all three should survive as
+    # one recovered span, not vanish.
+    run0 = [{"label": "AS", "start_offset": 10, "end_offset": 20}]
+    run1 = [{"label": "AS", "start_offset": 12, "end_offset": 22}]
+    run2 = [{"label": "AS", "start_offset": 8, "end_offset": 18}]
+    run3 = []  # this run predicted nothing here
+
+    result = cluster_ensemble_decode_spans([run0, run1, run2, run3], min_weight=2.0, weights=[1.0, 1.0, 1.0, 1.0])
+
+    assert result == [{"label": "AS", "start_offset": 8, "end_offset": 22}]
+
+
+def test_cluster_decode_drops_cluster_below_min_weight():
+    run0 = [{"label": "AS", "start_offset": 10, "end_offset": 20}]
+    run1 = []
+    run2 = []
+
+    result = cluster_ensemble_decode_spans([run0, run1, run2], min_weight=2.0, weights=[1.0, 1.0, 1.0])
+
+    assert result == []
+
+
+def test_cluster_decode_same_run_contributing_twice_counts_weight_once():
+    # A single run's own decode is internally non-overlapping, but even if it
+    # contributed two touching pieces of the same cluster, that run's weight must
+    # only count once toward the cluster total -- not be double-counted.
+    run0 = [
+        {"label": "AS", "start_offset": 10, "end_offset": 15},
+        {"label": "AS", "start_offset": 14, "end_offset": 20},
+    ]
+    run1 = []
+
+    result = cluster_ensemble_decode_spans([run0, run1], min_weight=1.5, weights=[1.0, 1.0])
+
+    # run0's total contribution is weight 1.0 (not 2.0), below min_weight 1.5
+    assert result == []
+
+
+def test_cluster_decode_non_overlapping_same_label_spans_stay_separate():
+    run0 = [{"label": "AS", "start_offset": 0, "end_offset": 10}]
+    run1 = [{"label": "AS", "start_offset": 100, "end_offset": 110}]
+
+    result = cluster_ensemble_decode_spans([run0, run1], min_weight=0.5, weights=[1.0, 1.0])
+
+    assert sorted(result, key=lambda s: s["start_offset"]) == [
+        {"label": "AS", "start_offset": 0, "end_offset": 10},
+        {"label": "AS", "start_offset": 100, "end_offset": 110},
+    ]
+
+
+def test_cluster_decode_cross_label_nms_high_iou_suppresses_lower_weight():
+    run0 = [{"label": "AS", "start_offset": 0, "end_offset": 20}]  # weight 2.0 (2 runs)
+    run1 = [{"label": "AS", "start_offset": 0, "end_offset": 20}]
+    run2 = [{"label": "OT", "start_offset": 2, "end_offset": 18}]  # weight 1.0, heavy overlap with AS
+
+    result = cluster_ensemble_decode_spans([run0, run1, run2], min_weight=0.5, weights=[1.0, 1.0, 1.0], cross_label_iou=0.3)
+
+    assert result == [{"label": "AS", "start_offset": 0, "end_offset": 20}]
+
+
+def test_cluster_decode_cross_label_low_iou_keeps_both():
+    run0 = [{"label": "AS", "start_offset": 0, "end_offset": 20}]
+    run1 = [{"label": "OT", "start_offset": 18, "end_offset": 30}]  # small overlap, low IoU
+
+    result = cluster_ensemble_decode_spans([run0, run1], min_weight=0.5, weights=[1.0, 1.0], cross_label_iou=0.3)
+
+    assert {(s["label"], s["start_offset"], s["end_offset"]) for s in result} == {("AS", 0, 20), ("OT", 18, 30)}
+
+
+def test_min_weight_for_fraction_default_matches_prior_strict_majority():
+    # fraction=0.5 (EnsemblingConfig's default) must reproduce the old hardcoded
+    # `sum(weights) / 2` exactly -- a no-op change for every existing config.
+    assert min_weight_for_fraction([1.0, 1.0, 1.0, 1.0], 0.5) == 2.0
+
+
+def test_min_weight_for_fraction_lower_fraction_admits_more_spans():
+    assert min_weight_for_fraction([1.0, 1.0, 1.0, 1.0], 0.25) == 1.0
+
+
+def test_min_weight_for_fraction_respects_unequal_weights():
+    assert min_weight_for_fraction([0.6, 0.9], 0.5) == 0.75
 
 
 def test_is_word_char_arabic_letters():

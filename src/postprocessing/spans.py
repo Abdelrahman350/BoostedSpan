@@ -73,6 +73,13 @@ def postprocess_spans(text: str, spans: list[dict]) -> list[dict]:
     return merge_adjacent_same_label(snapped, text)
 
 
+def min_weight_for_fraction(weights: list[float], fraction: float) -> float:
+    """Total-weight threshold a character's majority-voted label must clear to
+    survive ensemble_decode_spans -- fraction=0.5 (the long-standing default) is a
+    strict majority; lower values admit spans only a minority of runs agree on."""
+    return sum(weights) * fraction
+
+
 def ensemble_decode_spans(
     all_runs_spans: list[dict], text_len: int, min_weight: float, weights: list[float] | None = None
 ) -> list[dict]:
@@ -101,6 +108,84 @@ def ensemble_decode_spans(
                 spans.append({"label": cur_label, "start_offset": cur_start, "end_offset": i})
             cur_label, cur_start = lab, i
     return spans
+
+
+def cluster_ensemble_decode_spans(
+    all_runs_spans: list[list[dict]], min_weight: float, weights: list[float], cross_label_iou: float = 0.3
+) -> list[dict]:
+    """Span-level alternative to ensemble_decode_spans's per-character majority
+    vote, fixing a real failure mode diagnosed against enhanced_track_a_weighted:
+    each individual run recalls 96-99% of gold spans regardless of length, but
+    char-voting drops ~26% of SHORT spans entirely on the ensembled output.
+    Mechanism: independently boundary-jittered predictions across runs can
+    fragment a short span's per-character vote so no single character clears the
+    majority threshold, even though every run found something roughly there. A
+    2-char symmetric dilation before char-voting was tried and made things worse
+    (F1 0.687 vs baseline 0.706) -- it bridges gaps between separate, correctly-
+    predicted nearby spans as a side effect, not just recovering missed ones.
+
+    This clusters each label's candidate spans by transitive character overlap
+    FIRST (classic interval-merge sweep), counts each contributing run's weight
+    ONCE per cluster (not diluted across characters), and outputs the UNION of a
+    cluster's member spans once its total weight clears min_weight -- so partial,
+    boundary-jittered agreement across runs recovers one span instead of vanishing.
+    A separate cross-label NMS pass (same IoU-threshold pattern as
+    models/span_scorer.py's decode_spans_from_scores) resolves overlapping
+    different-label clusters afterward, since char-voting no longer does that for
+    free. Empirically (val sweep against enhanced_track_a_weighted's checkpoints):
+    F1 0.730 vs. char-voting's 0.706, with precision/recall much more balanced.
+    """
+    candidates: list[tuple[int, int, str, int]] = []
+    for run_idx, spans in enumerate(all_runs_spans):
+        for s in spans:
+            candidates.append((s["start_offset"], s["end_offset"], s["label"], run_idx))
+
+    by_label: dict[str, list[tuple[int, int, str, int]]] = collections.defaultdict(list)
+    for c in candidates:
+        by_label[c[2]].append(c)
+
+    clusters: list[tuple[str, int, int, float]] = []  # (label, start, end, total_weight)
+    for label, items in by_label.items():
+        items.sort()
+        n = len(items)
+        i = 0
+        while i < n:
+            cur_end = items[i][1]
+            member_runs = {items[i][3]}
+            members = [items[i]]
+            j = i + 1
+            while j < n and items[j][0] < cur_end:
+                cur_end = max(cur_end, items[j][1])
+                member_runs.add(items[j][3])
+                members.append(items[j])
+                j += 1
+            total_weight = sum(weights[r] for r in member_runs)
+            if total_weight >= min_weight:
+                start = min(m[0] for m in members)
+                end = max(m[1] for m in members)
+                clusters.append((label, start, end, total_weight))
+            i = j
+
+    clusters.sort(key=lambda c: c[3], reverse=True)
+    accepted: list[tuple[str, int, int, float]] = []
+    for label, start, end, w in clusters:
+        suppressed = False
+        for al, astart, aend, _ in accepted:
+            inter = max(0, min(end, aend) - max(start, astart))
+            if inter <= 0:
+                continue
+            if label == al:
+                suppressed = True
+                break
+            union = (end - start) + (aend - astart) - inter
+            iou = inter / union if union > 0 else 0.0
+            if iou >= cross_label_iou:
+                suppressed = True
+                break
+        if not suppressed:
+            accepted.append((label, start, end, w))
+
+    return [{"label": l, "start_offset": s, "end_offset": e} for l, s, e, _ in accepted]
 
 
 def spans_from_char_to_tag(char_to_tag: dict[tuple[int, int], str]) -> list[dict]:

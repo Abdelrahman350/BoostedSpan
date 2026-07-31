@@ -1,0 +1,81 @@
+# Task 2 enhanced_track_a_clustered: same trained pipeline as
+# enhanced_track_a_weighted.yaml (identical model/training/TAPT settings -- this
+# config trains its own copy of the 4-run CRF ensemble rather than reusing
+# enhanced_track_a_weighted's checkpoints, so it stays fully standalone/
+# reproducible from its own config, per this repo's config philosophy), but
+# switches the ENSEMBLE DECODE strategy from per-character majority voting to
+# span-level clustering (ensembling.decode_strategy: cluster, see
+# postprocessing/spans.py's cluster_ensemble_decode_spans).
+#
+# Motivation: diagnosed that char-voting drops ~26% of gold spans entirely on
+# enhanced_track_a_weighted's ensembled output, concentrated in SHORT spans (mean
+# 50 chars vs. 90 for correctly-matched spans) -- confirmed each individual run
+# actually recalls 96-99% of these regardless of length, so the loss happens
+# purely in how per-character votes get combined: independently boundary-jittered
+# predictions across runs fragment a short span's vote below the majority
+# threshold even though every run found it. Clustering by span overlap first
+# (rather than painting individual characters) fixes this. A naive fix (dilating
+# spans before char-voting) was tried and made things WORSE (F1 0.687 vs 0.706
+# baseline, by bridging gaps between separate correct spans) -- span-level
+# clustering avoids that failure mode since union is computed per-cluster, not by
+# blindly expanding coverage.
+#
+# Empirically tuned against enhanced_track_a_weighted's already-trained
+# checkpoints (val sweep, no retraining needed to tune since decode strategy is
+# entirely post-hoc): min_weight_fraction=0.8 (near-unanimous: with 4 runs of
+# similar internal_f1 weight, this requires roughly 3+ of 4 to agree) and
+# cross_label_iou>=0.5 both plateaued at the best F1 found, 0.7300 -- vs.
+# enhanced_track_a_weighted's 0.7059 and enhanced_track_a_retyped's 0.7118.
+task: task2
+variant: enhanced_track_a
+backbones:
+  - CAMeL-Lab/bert-base-arabic-camelbert-mix
+  - UBC-NLP/MARBERTv2
+seeds: [42, 123]
+output_dir: outputs/task2_enhanced_track_a_clustered
+
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  stride: 64
+  use_crf: true
+  gradient_checkpointing: true
+  use_aux_ce: true
+  aux_ce_weight: 0.3
+  aux_ce_clip: 20.0
+
+training:
+  epochs: 10
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 2
+
+ensembling:
+  enabled: true
+  weighting: internal_f1
+  decode_strategy: cluster
+  min_weight_fraction: 0.8
+  cross_label_iou: 0.5
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Left disabled, same reasoning as the other configs: the real submission is
+# generated separately via predict_eval.py against test_in.jsonl.
+submission:
+  enabled: false
+  team_name: Nu_Analytics
+  training_setting: both

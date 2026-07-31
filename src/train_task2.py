@@ -63,8 +63,10 @@ from models.span_type_classifier import (
     predict_span_types,
 )
 from postprocessing.spans import (
+    cluster_ensemble_decode_spans,
     decode_bio_greedy,
     ensemble_decode_spans,
+    min_weight_for_fraction,
     offsets_kept_by_mask,
     postprocess_spans,
     spans_from_char_to_tag,
@@ -371,14 +373,16 @@ def ensemble_track_a(
     weights = (
         [r.internal_f1 for r in run_results] if config.ensembling.weighting == "internal_f1" else [1.0] * len(run_results)
     )
-    min_weight = sum(weights) / 2
+    min_weight = min_weight_for_fraction(weights, config.ensembling.min_weight_fraction)
 
     def decode_for(rows: list[dict], spans_runs: list[dict[str, list[dict]]]) -> dict[str, list[dict]]:
         out = {}
         for r in rows:
-            raw = ensemble_decode_spans(
-                [runs[r["paragraph_id"]] for runs in spans_runs], len(r["text"]), min_weight, weights
-            )
+            spans_for_paragraph = [runs[r["paragraph_id"]] for runs in spans_runs]
+            if config.ensembling.decode_strategy == "cluster":
+                raw = cluster_ensemble_decode_spans(spans_for_paragraph, min_weight, weights, config.ensembling.cross_label_iou)
+            else:
+                raw = ensemble_decode_spans(spans_for_paragraph, len(r["text"]), min_weight, weights)
             out[r["paragraph_id"]] = postprocess_spans(r["text"], raw) if postprocess else raw
         return out
 

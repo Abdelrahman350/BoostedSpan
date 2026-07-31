@@ -95,6 +95,21 @@ class DataConfig:
 class EnsemblingConfig:
     enabled: bool = False
     weighting: str = "uniform"  # "uniform" | "internal_f1"
+    # Task 2 span-ensemble vote threshold (postprocessing/spans.py's
+    # ensemble_decode_spans): a character's majority-voted label survives only if
+    # the combined weight of runs agreeing on it clears min_weight_fraction * the
+    # total weight of all runs. Default 0.5 = strict majority, matching every
+    # config's behavior before this field existed.
+    min_weight_fraction: float = 0.5
+    # Task 2 decode strategy: "char_vote" (default, ensemble_decode_spans's
+    # per-character majority vote) or "cluster" (cluster_ensemble_decode_spans --
+    # groups each run's candidate spans by overlap first, outputs the union once a
+    # cluster's total weight clears min_weight_fraction; fixes char-voting's bias
+    # against short spans, see postprocessing/spans.py's docstring). cross_label_iou
+    # only applies to "cluster" -- same IoU-threshold NMS pattern as
+    # models/span_scorer.py's decode_overlap_iou_threshold.
+    decode_strategy: str = "char_vote"
+    cross_label_iou: float = 0.3
 
 
 @dataclass

@@ -30,7 +30,14 @@ import torch
 
 from data.loading import LABELS, build_shared_split, load_dev_in, load_task1, load_task2
 from models.span_type_classifier import retype_spans_with_confidence
-from postprocessing.spans import ensemble_decode_spans, merge_adjacent_same_label, snap_to_word_boundary, strip_non_content_spans
+from postprocessing.spans import (
+    cluster_ensemble_decode_spans,
+    ensemble_decode_spans,
+    merge_adjacent_same_label,
+    min_weight_for_fraction,
+    snap_to_word_boundary,
+    strip_non_content_spans,
+)
 from predict_eval import reload_task2_track_a_run
 from train_task2 import Task2RunResult, _write_and_score, train_span_type_stage
 from utils.config import load_config
@@ -60,11 +67,15 @@ def ensemble_and_clean(run_results: list[Task2RunResult], source_config, rows: l
     weights = (
         [r.internal_f1 for r in run_results] if source_config.ensembling.weighting == "internal_f1" else [1.0] * len(run_results)
     )
-    min_weight = sum(weights) / 2
+    min_weight = min_weight_for_fraction(weights, source_config.ensembling.min_weight_fraction)
     spans_runs = [getattr(r, spans_attr) for r in run_results]
     out = {}
     for r in rows:
-        raw = ensemble_decode_spans([runs[r["paragraph_id"]] for runs in spans_runs], len(r["text"]), min_weight, weights)
+        spans_for_paragraph = [runs[r["paragraph_id"]] for runs in spans_runs]
+        if source_config.ensembling.decode_strategy == "cluster":
+            raw = cluster_ensemble_decode_spans(spans_for_paragraph, min_weight, weights, source_config.ensembling.cross_label_iou)
+        else:
+            raw = ensemble_decode_spans(spans_for_paragraph, len(r["text"]), min_weight, weights)
         out[r["paragraph_id"]] = _boundary_cleanup(r["text"], raw)
     return out
 
