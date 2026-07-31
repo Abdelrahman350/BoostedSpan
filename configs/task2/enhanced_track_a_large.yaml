@@ -1,0 +1,75 @@
+# Task 2 enhanced_track_a_large: same recipe as enhanced_track_a_clustered.yaml
+# (best result so far, val F1 0.7294 -- CRF + aux-CE weighting + cluster decode),
+# but tests a genuinely unexplored lever: backbone CAPACITY. Swaps the two
+# ~110-163M "base" backbones (CAMeLBERT-mix, MARBERTv2) for a single
+# ~371M-param large Arabic BERT (aubmindlab/bert-large-arabertv02, 24 layers,
+# hidden=1024) at 2 seeds, rather than 2 different base-size backbones at 2
+# seeds -- isolates "does more capacity help" from "does more
+# backbone-architecture diversity help" (the latter already explored this
+# session via char-vote/cluster ensembling).
+#
+# Needs a FRESH TAPT run for this backbone (no cache exists yet, unlike
+# CAMeLBERT-mix/MARBERTv2) -- real added cost vs. every other config change this
+# session, which reused already-trained artifacts. Batch size halved vs.
+# enhanced_track_a_clustered.yaml (4->2) with gradient_accumulation doubled
+# (4->8, same effective batch=16) as a VRAM safety margin for the ~2.3-3.4x
+# larger model on a 12GB GPU; gradient_checkpointing was already on.
+#
+# ensembling.min_weight_fraction=0.8 is carried over UNVERIFIED for this N=2-run
+# setup (only 2 seeds, not 4 backbone x seed combinations) -- with equal weights,
+# fraction=0.8 of a 2-run total effectively requires BOTH runs to agree, a
+# stricter bar than the 4-run "near-unanimous" case this was tuned for. Re-sweep
+# after training (same no-retrain-needed method used throughout this session)
+# rather than trusting this default blindly.
+task: task2
+variant: enhanced_track_a
+backbones:
+  - aubmindlab/bert-large-arabertv02
+seeds: [42, 123]
+output_dir: outputs/task2_enhanced_track_a_large
+
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  stride: 64
+  use_crf: true
+  gradient_checkpointing: true
+  use_aux_ce: true
+  aux_ce_weight: 0.3
+  aux_ce_clip: 20.0
+
+training:
+  epochs: 10
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 2
+
+ensembling:
+  enabled: true
+  weighting: internal_f1
+  decode_strategy: cluster
+  min_weight_fraction: 0.8
+  cross_label_iou: 0.5
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Left disabled, same reasoning as the other configs: the real submission is
+# generated separately via predict_eval.py against test_in.jsonl.
+submission:
+  enabled: false
+  team_name: Nu_Analytics
+  training_setting: both
