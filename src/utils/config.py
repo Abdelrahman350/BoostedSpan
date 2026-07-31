@@ -54,6 +54,11 @@ class ModelConfig:
     use_aux_ce: bool = False
     aux_ce_weight: float = 0.3
     aux_ce_clip: float = 20.0
+    # task2 enhanced_track_a_retyped only (train_task2_retype.py) -- a span already
+    # typed by the source CRF ensemble is only re-typed by the dedicated
+    # SpanTypeClassifier when its own prediction's softmax confidence clears this
+    # threshold. Ignored everywhere else.
+    retype_confidence_threshold: float = 0.6
 
 
 @dataclass
@@ -177,6 +182,10 @@ class Config:
     span_scorer: Optional[SpanScorerConfig] = None
     quantization: Optional[QuantizationConfig] = None
     lora: Optional[LoraConfigFields] = None
+    # train_task2_retype.py only: path to the config that owns the already-trained
+    # boundary ensemble (e.g. configs/task2/enhanced_track_a_weighted.yaml) whose
+    # checkpoints get reloaded rather than retrained. None/unused everywhere else.
+    source_config: Optional[str] = None
 
 
 def _build(cls: Type[T], data: Any, path: str) -> T:

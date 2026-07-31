@@ -276,6 +276,42 @@ def run_task2_track_b_eval(config: Config, split, test_rows: list[dict], eval_co
     _write_and_score(val_spans, test_spans, split, test_rows, eval_config, data_dir)
 
 
+# --- Task 2: enhanced_track_a_retyped (boundary ensemble reload + retyping
+# classifier reload -- see train_task2_retype.py, whose helpers this reuses
+# unchanged rather than duplicating the ensemble/retype/merge logic) ---
+
+
+def run_task2_retyped_eval(config: Config, split, test_rows: list[dict], eval_config: Config, data_dir: str) -> None:
+    from train_task2_retype import ensemble_and_clean, reload_source_ensemble, retype_and_merge
+
+    source_config = load_config(config.source_config)
+    run_results = reload_source_ensemble(source_config, split, test_rows)
+    val_spans = ensemble_and_clean(run_results, source_config, split.task2_val, "val_spans")
+    test_spans = ensemble_and_clean(run_results, source_config, test_rows, "dev_spans")
+
+    backbone_id = config.backbones[0]
+    base = resolve_base_checkpoint(backbone_id, config)
+    checkpoint_dir = f"{config.output_dir}/runs/type_classifier/checkpoint_best"
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
+    model = SpanTypeClassifier(base, num_types=len(LABELS))
+    load_custom_state_dict(model, checkpoint_dir)
+    model.to(_device())
+    model.eval()
+
+    val_spans_retyped = retype_and_merge(
+        split.task2_val, val_spans, model, tokenizer, config.model.max_seq_len, config.model.retype_confidence_threshold
+    )
+    test_spans_retyped = retype_and_merge(
+        test_rows, test_spans, model, tokenizer, config.model.max_seq_len, config.model.retype_confidence_threshold
+    )
+
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    _write_and_score(val_spans_retyped, test_spans_retyped, split, test_rows, eval_config, data_dir)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -306,6 +342,8 @@ def main() -> None:
         run_task1_eval(config, split, test_rows, eval_config, args.data_dir)
     elif config.variant == "enhanced_track_b":
         run_task2_track_b_eval(config, split, test_rows, eval_config, args.data_dir)
+    elif config.variant == "enhanced_track_a_retyped":
+        run_task2_retyped_eval(config, split, test_rows, eval_config, args.data_dir)
     else:
         run_task2_track_a_eval(config, split, test_rows, eval_config, args.data_dir)
 

@@ -163,3 +163,42 @@ def predict_span_types(text: str, domain: str, spans: list[dict], model, tokeniz
         pred_label = labels[out["logits"].argmax(dim=-1).item()]
         typed.append({"label": pred_label, "start_offset": s["start_offset"], "end_offset": s["end_offset"]})
     return typed
+
+
+@torch.no_grad()
+def retype_spans_with_confidence(
+    text: str, domain: str, spans: list[dict], model, tokenizer, labels: list[str], max_len: int, confidence_threshold: float
+) -> list[dict]:
+    """Like predict_span_types, but spans already carry a label (e.g. from a CRF
+    ensemble's boundary+type decode) -- only overrides it with this classifier's
+    own prediction when that prediction's softmax confidence clears
+    confidence_threshold, otherwise keeps the original label unchanged. A span
+    that falls outside a truncated window (tok_start is None) also keeps its
+    original label -- unlike predict_span_types, which can afford to just drop an
+    untyped span, here the span already has a usable label worth preserving."""
+    if not spans:
+        return []
+    full_text = build_input_text(text, domain)
+    prefix_len = len(full_text) - len(text)
+    enc = tokenizer(full_text, truncation=True, max_length=max_len, return_offsets_mapping=True, return_tensors="pt")
+    offsets = enc.pop("offset_mapping")[0].tolist()
+    device = next(model.parameters()).device
+    input_ids, attention_mask = enc["input_ids"].to(device), enc["attention_mask"].to(device)
+
+    retyped = []
+    for s in spans:
+        tok_start, tok_end = char_span_to_token_span(
+            offsets, s["start_offset"] + prefix_len, s["end_offset"] + prefix_len
+        )
+        if tok_start is None:
+            retyped.append(dict(s))
+            continue
+        span_start_t = torch.tensor([tok_start]).to(device)
+        span_end_t = torch.tensor([tok_end + 1]).to(device)
+        out = model(input_ids=input_ids, attention_mask=attention_mask, span_start=span_start_t, span_end=span_end_t)
+        probs = out["logits"].softmax(dim=-1)[0]
+        best_idx = int(probs.argmax().item())
+        best_conf = probs[best_idx].item()
+        new_label = labels[best_idx] if best_conf >= confidence_threshold else s["label"]
+        retyped.append({"label": new_label, "start_offset": s["start_offset"], "end_offset": s["end_offset"]})
+    return retyped

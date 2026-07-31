@@ -26,6 +26,7 @@ dev = ["pytest>=8.0"]
 sanad-train-task1 = "train_task1:main"
 sanad-train-task2 = "train_task2:main"
 sanad-train-task1-generative = "train_task1_generative:main"
+sanad-train-task2-retype = "train_task2_retype:main"
 sanad-predict-eval = "predict_eval:main"
 
 [build-system]

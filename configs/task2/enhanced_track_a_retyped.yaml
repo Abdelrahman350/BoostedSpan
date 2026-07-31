@@ -1,0 +1,71 @@
+# Task 2 enhanced_track_a_retyped: boundary+retype hybrid (see
+# src/train_task2_retype.py's module docstring). Reloads the already-trained
+# enhanced_track_a_weighted ensemble's checkpoints for boundaries (NOT retrained
+# here) and trains one new, single-backbone/seed SpanTypeClassifier (Track B's
+# stage B, contrastive-enabled -- reuses models/contrastive.py's SupConLoss,
+# genuinely well-suited here since this classifier is teacher-forced on GOLD
+# offsets, unconfounded by any boundary-decode issue) to re-score each decoded
+# span's type when its own prediction clears retype_confidence_threshold.
+#
+# REQUIRES configs/task2/enhanced_track_a_weighted.yaml's checkpoints to already
+# exist on disk (outputs/task2_enhanced_track_a_weighted/runs/*/checkpoint_best) --
+# run that config first if they don't.
+task: task2
+variant: enhanced_track_a_retyped
+source_config: configs/task2/enhanced_track_a_weighted.yaml
+backbones:
+  - CAMeL-Lab/bert-base-arabic-camelbert-mix
+seeds: [42]
+output_dir: outputs/task2_enhanced_track_a_retyped
+
+# CAMeLBERT-mix was already TAPT'd by enhanced_track_a_weighted's own training run
+# (outputs/tapt_checkpoints/CAMeL-Lab__bert-base-arabic-camelbert-mix already
+# exists) -- reused here, no extra TAPT run.
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  contrastive_enabled: true
+  contrastive_weight: 0.1
+  contrastive_temperature: 0.1
+  # Was 0.6 -- empirically far too permissive. A threshold sweep against the
+  # already-trained checkpoints (val set) showed 0.6 actually HURTS (F1 0.688 vs.
+  # the un-retyped 0.706 baseline): the classifier is confidently wrong often
+  # enough at that bar to override correct CRF-ensemble labels more than it fixes
+  # genuine confusions. The sweep's sweet spot is ~0.85-0.95 (peak F1 ~0.712);
+  # 0.9 chosen as a robust middle value rather than the exact peak, which is
+  # sensitive to noise on a 92-paragraph val set.
+  retype_confidence_threshold: 0.9
+
+training:
+  # Matches Track B stage B's proven hyperparameters (configs/task2/enhanced_track_b.yaml).
+  epochs: 8
+  per_device_batch_size: 32
+  gradient_accumulation_steps: 1
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 0
+
+ensembling:
+  enabled: false
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Left disabled, same reasoning as the other configs: the real submission is
+# generated separately via predict_eval.py against test_in.jsonl.
+submission:
+  enabled: false
+  team_name: Nu_Analytics
+  training_setting: both
