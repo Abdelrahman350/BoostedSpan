@@ -37,6 +37,13 @@ class ModelConfig:
     # yes/no rank-classification objective (see train_task1_generative.py's
     # WeightedQLoRATrainer). Ignored everywhere else.
     class_balanced_sft: bool = False
+    # Clip for weighted_bce_pos_weight's inverse-frequency formula when
+    # class_balanced_sft is true. Default 8.0 matches the encoder path
+    # (models/losses.py), but that value was diagnosed as too aggressive for
+    # QLoRA's per-example SFT weighting specifically on tiny-support labels
+    # (CO/ST, 5 val instances each) -- a single heavily-upweighted example can
+    # dominate one gradient step there, unlike the encoder path's batched BCE.
+    class_balanced_sft_clip: float = 8.0
     # task2-specific (ignored for task1 configs)
     stride: int = 64
     use_crf: bool = False

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import collections
 import gc
+import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,7 +74,7 @@ from postprocessing.spans import (
 )
 from pretraining.tapt import run_tapt
 from text.cues import build_input_text
-from utils.checkpointing import save_best_and_last_checkpoints
+from utils.checkpointing import load_custom_state_dict, save_best_and_last_checkpoints
 from utils.config import Config, SpanScorerConfig, load_config
 from utils.logging import install_rounded_logging
 from utils.tracking import RunTracker, make_trainer_callback
@@ -267,78 +268,96 @@ def train_task2_model(
     else:
         checkpoint = backbone_id
 
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+    checkpoint_best_dir = f"{output_dir}/checkpoint_best"
+    # Resumability: a multi-seed/backbone ensemble run can take hours in total: if
+    # interrupted after some (backbone, seed) runs already finished (their
+    # checkpoint_best is saved to disk before the next run starts, see below),
+    # blindly restarting would retrain them all from scratch. Same idempotent
+    # "skip if the output already exists" pattern as pretraining/tapt.py's
+    # run_tapt and train_task1_generative.py's train_one_qlora_run.
+    resume_only = os.path.isdir(checkpoint_best_dir)
+
+    tokenizer = AutoTokenizer.from_pretrained(checkpoint_best_dir if resume_only else checkpoint)
     if config.model.use_crf:
         model = TokenClassifierWithCRF(checkpoint, num_labels=len(BIO_TAGS))
-        if config.model.gradient_checkpointing:
+        if resume_only:
+            load_custom_state_dict(model, checkpoint_best_dir)
+        elif config.model.gradient_checkpointing:
             model.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     else:
-        model = AutoModelForTokenClassification.from_pretrained(checkpoint, num_labels=len(BIO_TAGS))
-        if config.model.gradient_checkpointing:
-            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        if resume_only:
+            model = AutoModelForTokenClassification.from_pretrained(checkpoint_best_dir)
+        else:
+            model = AutoModelForTokenClassification.from_pretrained(checkpoint, num_labels=len(BIO_TAGS))
+            if config.model.gradient_checkpointing:
+                model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.to("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_examples = tokenize_and_align_task2(
-        tokenizer, split.task2_train, config.model.max_seq_len, config.model.stride, config.data.discourse_cues,
-        augment_jitter=config.data.jitter_augment, jitter_seed=seed,
-    )
-    train_ds = Dataset.from_list(train_examples)
-    val_examples = tokenize_and_align_task2(
-        tokenizer, split.task2_val, config.model.max_seq_len, config.model.stride, config.data.discourse_cues,
-    )
-    val_ds = Dataset.from_list(val_examples)
-    collator = DataCollatorForTokenClassification(tokenizer=tokenizer, label_pad_token_id=-100)
-
-    run_name = f"{config.task}_{config.variant}_{backbone_id.replace('/', '__')}_{seed}"
-    tracker = RunTracker(config.wandb, run_name, run_config={"backbone": backbone_id, "seed": seed, "variant": config.variant})
-
-    save_best = config.training.save_best_checkpoint
-    args = TrainingArguments(
-        output_dir=output_dir,
-        num_train_epochs=config.training.epochs,
-        per_device_train_batch_size=config.training.per_device_batch_size,
-        gradient_accumulation_steps=config.training.gradient_accumulation_steps,
-        learning_rate=config.training.learning_rate,
-        weight_decay=config.training.weight_decay,
-        warmup_ratio=config.training.warmup_ratio,
-        eval_strategy="epoch" if save_best else "no",
-        save_strategy="epoch" if save_best else "no",
-        save_total_limit=2 if save_best else None,
-        load_best_model_at_end=save_best,
-        metric_for_best_model="f1_macro" if save_best else None,
-        greater_is_better=True if save_best else None,
-        logging_steps=20,
-        remove_unused_columns=False,
-        fp16=torch.cuda.is_available(),
-        seed=seed,
-        report_to=[],
-    )
-    use_aux_ce = config.model.use_crf and config.model.use_aux_ce
-    if use_aux_ce:
-        span_weights = span_class_weights(split.task2_train, config.model.aux_ce_clip)
-        bio_weights = bio_class_weights_from_span_weights(span_weights, LABELS, bio2id)
-        trainer = WeightedCRFTrainer(
-            model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds if save_best else None, data_collator=collator,
-            compute_metrics=compute_token_classification_metrics if save_best else None,
-            callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
-            bio_class_weights=bio_weights, aux_ce_weight=config.model.aux_ce_weight,
-        )
+    trainer = None  # only bound in the training branch; deleted unconditionally below
+    if resume_only:
+        print(f"{checkpoint_best_dir} already exists -- skipping training, reloading the saved checkpoint to score it.")
     else:
-        trainer = Trainer(
-            model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds if save_best else None, data_collator=collator,
-            compute_metrics=compute_token_classification_metrics if save_best else None,
-            callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
+        train_examples = tokenize_and_align_task2(
+            tokenizer, split.task2_train, config.model.max_seq_len, config.model.stride, config.data.discourse_cues,
+            augment_jitter=config.data.jitter_augment, jitter_seed=seed,
         )
-    install_rounded_logging(trainer)
-    trainer.train()
+        train_ds = Dataset.from_list(train_examples)
+        val_examples = tokenize_and_align_task2(
+            tokenizer, split.task2_val, config.model.max_seq_len, config.model.stride, config.data.discourse_cues,
+        )
+        val_ds = Dataset.from_list(val_examples)
+        collator = DataCollatorForTokenClassification(tokenizer=tokenizer, label_pad_token_id=-100)
 
-    if save_best:
-        # TokenClassifierWithCRF is a bare nn.Module, not a HF PreTrainedModel, so
-        # trainer.save_model() falls back to a raw state_dict (pytorch_model.bin, no
-        # config.json/save_pretrained support) -- reloading it means reconstructing
-        # TokenClassifierWithCRF(checkpoint, num_labels=...) and calling
-        # load_state_dict() manually, unlike Task 1's full HF checkpoint.
-        save_best_and_last_checkpoints(trainer, tokenizer, output_dir)
+        run_name = f"{config.task}_{config.variant}_{backbone_id.replace('/', '__')}_{seed}"
+        tracker = RunTracker(config.wandb, run_name, run_config={"backbone": backbone_id, "seed": seed, "variant": config.variant})
+
+        save_best = config.training.save_best_checkpoint
+        args = TrainingArguments(
+            output_dir=output_dir,
+            num_train_epochs=config.training.epochs,
+            per_device_train_batch_size=config.training.per_device_batch_size,
+            gradient_accumulation_steps=config.training.gradient_accumulation_steps,
+            learning_rate=config.training.learning_rate,
+            weight_decay=config.training.weight_decay,
+            warmup_ratio=config.training.warmup_ratio,
+            eval_strategy="epoch" if save_best else "no",
+            save_strategy="epoch" if save_best else "no",
+            save_total_limit=2 if save_best else None,
+            load_best_model_at_end=save_best,
+            metric_for_best_model="f1_macro" if save_best else None,
+            greater_is_better=True if save_best else None,
+            logging_steps=20,
+            remove_unused_columns=False,
+            fp16=torch.cuda.is_available(),
+            seed=seed,
+            report_to=[],
+        )
+        use_aux_ce = config.model.use_crf and config.model.use_aux_ce
+        if use_aux_ce:
+            span_weights = span_class_weights(split.task2_train, config.model.aux_ce_clip)
+            bio_weights = bio_class_weights_from_span_weights(span_weights, LABELS, bio2id)
+            trainer = WeightedCRFTrainer(
+                model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds if save_best else None, data_collator=collator,
+                compute_metrics=compute_token_classification_metrics if save_best else None,
+                callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
+                bio_class_weights=bio_weights, aux_ce_weight=config.model.aux_ce_weight,
+            )
+        else:
+            trainer = Trainer(
+                model=model, args=args, train_dataset=train_ds, eval_dataset=val_ds if save_best else None, data_collator=collator,
+                compute_metrics=compute_token_classification_metrics if save_best else None,
+                callbacks=[make_trainer_callback(tracker)] if config.wandb.enabled else None,
+            )
+        install_rounded_logging(trainer)
+        trainer.train()
+
+        if save_best:
+            # TokenClassifierWithCRF is a bare nn.Module, not a HF PreTrainedModel, so
+            # trainer.save_model() falls back to a raw state_dict (pytorch_model.bin, no
+            # config.json/save_pretrained support) -- reloading it means reconstructing
+            # TokenClassifierWithCRF(checkpoint, num_labels=...) and calling
+            # load_state_dict() manually, unlike Task 1's full HF checkpoint.
+            save_best_and_last_checkpoints(trainer, tokenizer, output_dir)
 
     model.eval()
     val_spans = {
@@ -358,8 +377,9 @@ def train_task2_model(
 
     gold_val_by_id = {r["paragraph_id"]: r["labels"] for r in split.task2_val}
     internal_f1 = corpus_partial_overlap_f1(gold_val_by_id, val_spans)
-    tracker.log({"internal_partial_overlap_f1": internal_f1})
-    tracker.finish()
+    if not resume_only:
+        tracker.log({"internal_partial_overlap_f1": internal_f1})
+        tracker.finish()
 
     del model, trainer
     gc.collect()

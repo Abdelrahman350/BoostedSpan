@@ -13,11 +13,29 @@ handles both.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from pathlib import Path
 
+import torch
+from safetensors.torch import load_file
+
 _STEP_DIR_RE = re.compile(r"^checkpoint-(\d+)$")
+
+
+def load_custom_state_dict(model: torch.nn.Module, checkpoint_dir: str) -> torch.nn.Module:
+    """Reload a bare-nn.Module checkpoint (TokenClassifierWithCRF, SpanScorerModel,
+    SpanTypeClassifier) saved by save_best_and_last_checkpoints -- these aren't HF
+    PreTrainedModels, so trainer.save_model() falls back to a raw state_dict with
+    no config.json/save_pretrained support. Caller must reconstruct the same model
+    class/shape (e.g. TokenClassifierWithCRF(base_checkpoint, num_labels=...))
+    before calling this."""
+    st_path = os.path.join(checkpoint_dir, "model.safetensors")
+    bin_path = os.path.join(checkpoint_dir, "pytorch_model.bin")
+    state_dict = load_file(st_path) if os.path.exists(st_path) else torch.load(bin_path, map_location="cpu")
+    model.load_state_dict(state_dict, strict=True)
+    return model
 
 
 def _numbered_checkpoint_dirs(output_dir: Path) -> list[Path]:

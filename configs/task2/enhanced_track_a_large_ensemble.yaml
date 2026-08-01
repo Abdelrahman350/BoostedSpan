@@ -1,0 +1,79 @@
+# Task 2 enhanced_track_a_large_ensemble: same recipe as enhanced_track_a_large.yaml
+# (current #1 leaderboard result, eval F1=0.745), but with 2 more seeds of the
+# SAME backbone (aubmindlab/bert-large-arabertv02) -- 4 total runs instead of 2.
+#
+# Motivation: re-ran this session's overlap-matching diagnostic against
+# enhanced_track_a_large's own val predictions (not the older weighted char-vote
+# model) and found false negatives (fully-missed gold spans) are now the dominant
+# error source by far -- 123 of 450 gold spans (27%), UP from 109 with the old
+# 4-run char-vote ensemble, despite the cluster decode's big precision win (15
+# false positives vs. 24). Missed spans are still disproportionately short (mean
+# 47 chars vs. 93 for matched ones) -- the same short-span-vote-fragmentation
+# mechanism diagnosed earlier this session. Hypothesis: this run only has 2 total
+# runs feeding cluster_ensemble_decode_spans (vs. 4 for the earlier char-vote
+# experiments), so min_weight_fraction=0.8 with 2 near-equal-weight runs
+# effectively requires BOTH to agree -- less redundancy for a short span that
+# only some runs catch. Testing "does more redundancy (not more architecture
+# diversity) recover more of these" in isolation, matching the earlier
+# char-vote ensemble's run count for a clean comparison.
+#
+# No new TAPT needed -- aubmindlab/bert-large-arabertv02 was already TAPT'd by
+# enhanced_track_a_large's own training (outputs/tapt_checkpoints/aubmindlab__bert-large-arabertv02
+# already exists), reused automatically by run_tapt's idempotent cache check.
+#
+# ensembling.min_weight_fraction/cross_label_iou are carried over UNVERIFIED for
+# this new 4-run setup -- re-sweep after training (same no-retrain-needed method
+# used for every decode-time knob this session) rather than trusting these
+# 2-run-tuned defaults blindly.
+task: task2
+variant: enhanced_track_a
+backbones:
+  - aubmindlab/bert-large-arabertv02
+seeds: [42, 123, 7, 2024]
+output_dir: outputs/task2_enhanced_track_a_large_ensemble
+
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  stride: 64
+  use_crf: true
+  gradient_checkpointing: true
+  use_aux_ce: true
+  aux_ce_weight: 0.3
+  aux_ce_clip: 20.0
+
+training:
+  epochs: 10
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 2
+
+ensembling:
+  enabled: true
+  weighting: internal_f1
+  decode_strategy: cluster
+  min_weight_fraction: 0.8
+  cross_label_iou: 0.5
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Left disabled, same reasoning as the other configs: the real submission is
+# generated separately via predict_eval.py against test_in.jsonl.
+submission:
+  enabled: false
+  team_name: Nu_Analytics
+  training_setting: both

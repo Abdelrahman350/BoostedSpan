@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import argparse
 import gc
+import os
 
 import numpy as np
 import torch
 import torch.nn as nn
 from datasets import Dataset
 from sklearn.metrics import f1_score
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Trainer, TrainingArguments
 
 from data.loading import LABELS, build_shared_split, load_dev_in, load_task1, load_task2
@@ -94,7 +96,7 @@ def build_sft_example(tokenizer, prompt: str, completion: str, max_len: int, wei
 
 
 def build_generative_sft_dataset(
-    tokenizer, rows: list[dict], max_len: int, discourse_cues: bool, class_balanced: bool = False
+    tokenizer, rows: list[dict], max_len: int, discourse_cues: bool, class_balanced: bool = False, clip: float = 8.0
 ) -> list[dict]:
     """One training example per (paragraph, label) pair -- completion is the gold
     yes/no answer token for that label, matching how score_labels_via_logits later
@@ -106,8 +108,11 @@ def build_generative_sft_dataset(
     "yes"), <1x for a label's majority-positive answer (e.g. AS's "yes", where "no"
     is actually the minority -- pos_weight naturally comes out <1 there, correctly
     downweighting AS's dominant class instead of only ever upweighting rarity).
+    `clip` (config.model.class_balanced_sft_clip) defaults to the encoder path's
+    8.0 but is expected to need a gentler value here -- see that config field's
+    docstring for why the encoder path's clip over-corrected on CO/ST.
     """
-    pos_weight = weighted_bce_pos_weight(rows, LABELS, clip=8.0) if class_balanced else None
+    pos_weight = weighted_bce_pos_weight(rows, LABELS, clip=clip) if class_balanced else None
     examples = []
     for r in rows:
         for i, label in enumerate(LABELS):
@@ -176,6 +181,20 @@ def score_labels_via_logits(text: str, domain: str, model, tokenizer, max_len: i
     return np.array(probs)
 
 
+def score_rows(rows: list[dict], model, tokenizer, max_len: int, discourse_cues: bool, desc: str = "scoring") -> np.ndarray:
+    """score_labels_via_logits over many rows, with a progress bar. Not cosmetic:
+    each row needs len(LABELS)=6 separate forward passes with no natural batching
+    (score_labels_via_logits probes one label at a time), so a few hundred rows can
+    take tens of minutes with zero visible output otherwise -- this was silent
+    before and looked indistinguishable from a hang."""
+    return np.stack(
+        [
+            score_labels_via_logits(r["text"], r["type"], model, tokenizer, max_len, discourse_cues)
+            for r in tqdm(rows, desc=desc)
+        ]
+    )
+
+
 class _BestAdapterState:
     """In-memory best-epoch tracker for the QLoRA path, where score_labels_via_logits'
     many-forward-passes-per-row shape doesn't fit Trainer's batched compute_metrics
@@ -198,9 +217,7 @@ def _qlora_val_f1(model, tokenizer, val_rows: list[dict], max_len: int, discours
     """Per-epoch proxy for best-adapter selection: macro F1 at a fixed 0.5 threshold
     over score_labels_via_logits' P(yes) outputs -- same shape as
     train_task1.compute_task1_metrics, just computed outside Trainer's eval loop."""
-    val_probs = np.stack(
-        [score_labels_via_logits(r["text"], r["type"], model, tokenizer, max_len, discourse_cues) for r in val_rows]
-    )
+    val_probs = score_rows(val_rows, model, tokenizer, max_len, discourse_cues, desc="scoring val (per-epoch)")
     val_gold = np.array([[1.0 if l in r["labels"] else 0.0 for l in LABELS] for r in val_rows])
     return f1_score(val_gold, (val_probs > 0.5).astype(int), average="macro", zero_division=0)
 
@@ -264,7 +281,7 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
     if quant_cfg is None or lora_cfg is None:
         raise ValueError("qlora_allam requires both `quantization:` and `lora:` blocks in the config.")
 
-    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=quant_cfg.load_in_4bit,
@@ -273,97 +290,113 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
         bnb_4bit_use_double_quant=quant_cfg.bnb_4bit_use_double_quant,
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(backbone_id)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token  # common gotcha: causal LM tokenizers often lack a dedicated pad token
+    checkpoint_best_dir = f"{output_dir}/checkpoint_best"
+    checkpoint_last_dir = f"{output_dir}/checkpoint_last"
+    # Resumability: training this 7B model can run for 1.5-2+ hours, and the
+    # adapter is already fully saved to disk before the (separately slow) val/dev
+    # scoring pass runs below -- if that scoring pass was interrupted (e.g. the
+    # process was killed), re-running from scratch would needlessly redo the
+    # expensive part. Same idempotent "skip if the output already exists" pattern
+    # as pretraining/tapt.py's run_tapt.
+    resume_only = os.path.isdir(checkpoint_best_dir)
+    trainer = None  # only bound in the training branch; deleted unconditionally below
 
-    model = AutoModelForCausalLM.from_pretrained(backbone_id, quantization_config=bnb_config, device_map={"": 0} if torch.cuda.is_available() else "cpu")
-    model = prepare_model_for_kbit_training(model)
-    model = get_peft_model(
-        model,
-        LoraConfig(
-            r=lora_cfg.r, lora_alpha=lora_cfg.alpha, lora_dropout=lora_cfg.dropout,
-            target_modules=lora_cfg.target_modules, task_type="CAUSAL_LM",
-        ),
-    )
-    if config.model.gradient_checkpointing:
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-
-    class_balanced = config.model.class_balanced_sft
-    train_examples = build_generative_sft_dataset(
-        tokenizer, split.task1_train, config.model.max_seq_len, config.data.discourse_cues, class_balanced=class_balanced
-    )
-    train_ds = Dataset.from_list(train_examples)
-    collator = make_generative_collate_fn(tokenizer, include_weight=class_balanced)
-
-    run_name = f"{config.task}_{config.variant}_{backbone_id.replace('/', '__')}_{seed}"
-    tracker = RunTracker(config.wandb, run_name, run_config={"backbone": backbone_id, "seed": seed, "variant": config.variant})
-
-    # No per-epoch eval_strategy/load_best_model_at_end here, unlike this repo's other
-    # variants: score_labels_via_logits (many per-paragraph forward passes) doesn't fit
-    # the standard batch-forward compute_metrics interface. Instead, when save_best is
-    # true, an on_epoch_end callback runs that eval manually and tracks the best
-    # in-memory adapter state (see make_qlora_best_adapter_callback / _BestAdapterState)
-    # -- PEFT adapters are small enough to keep a full clone in memory across epochs.
-    save_best = config.training.save_best_checkpoint
-    best_state = _BestAdapterState()
-    args = TrainingArguments(
-        output_dir=output_dir,
-        num_train_epochs=config.training.epochs,
-        per_device_train_batch_size=config.training.per_device_batch_size,
-        gradient_accumulation_steps=config.training.gradient_accumulation_steps,
-        learning_rate=config.training.learning_rate,
-        weight_decay=config.training.weight_decay,
-        warmup_ratio=config.training.warmup_ratio,
-        save_strategy="no",
-        logging_steps=20,
-        remove_unused_columns=False,
-        fp16=torch.cuda.is_available(),
-        seed=seed,
-        report_to=[],
-    )
-    callbacks = [make_trainer_callback(tracker)] if config.wandb.enabled else []
-    if save_best:
-        callbacks.append(
-            make_qlora_best_adapter_callback(
-                tokenizer, split.task1_val, config.model.max_seq_len, config.data.discourse_cues, best_state
-            )
+    if resume_only:
+        print(f"{checkpoint_best_dir} already exists -- skipping training, reloading the saved adapter to score it.")
+        tokenizer = AutoTokenizer.from_pretrained(checkpoint_best_dir)
+        base_model = AutoModelForCausalLM.from_pretrained(
+            backbone_id, quantization_config=bnb_config, device_map={"": 0} if torch.cuda.is_available() else "cpu"
         )
-    trainer_cls = WeightedQLoRATrainer if class_balanced else Trainer
-    trainer = trainer_cls(
-        model=model, args=args, train_dataset=train_ds, data_collator=collator,
-        callbacks=callbacks or None,
-    )
-    install_rounded_logging(trainer)
-    trainer.train()
+        model = PeftModel.from_pretrained(base_model, checkpoint_best_dir)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(backbone_id)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token  # common gotcha: causal LM tokenizers often lack a dedicated pad token
 
-    # PEFT adapter-only save (tens of MB), not a merged model (~14GB fp16) -- reload
-    # via PeftModel.from_pretrained(base_model, adapter_dir).
-    # model currently holds the final epoch's weights ("last").
-    model.save_pretrained(f"{output_dir}/checkpoint_last")
-    tokenizer.save_pretrained(f"{output_dir}/checkpoint_last")
+        model = AutoModelForCausalLM.from_pretrained(backbone_id, quantization_config=bnb_config, device_map={"": 0} if torch.cuda.is_available() else "cpu")
+        model = prepare_model_for_kbit_training(model)
+        model = get_peft_model(
+            model,
+            LoraConfig(
+                r=lora_cfg.r, lora_alpha=lora_cfg.alpha, lora_dropout=lora_cfg.dropout,
+                target_modules=lora_cfg.target_modules, task_type="CAUSAL_LM",
+            ),
+        )
+        if config.model.gradient_checkpointing:
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
-    if save_best:
-        from peft import set_peft_model_state_dict
+        class_balanced = config.model.class_balanced_sft
+        train_examples = build_generative_sft_dataset(
+            tokenizer, split.task1_train, config.model.max_seq_len, config.data.discourse_cues,
+            class_balanced=class_balanced, clip=config.model.class_balanced_sft_clip,
+        )
+        train_ds = Dataset.from_list(train_examples)
+        collator = make_generative_collate_fn(tokenizer, include_weight=class_balanced)
 
-        # Fall back to the final epoch's state if no epoch ever beat float("-inf")
-        # (e.g. num_train_epochs=0 in a smoke test) -- best_state.best_state stays None.
-        if best_state.best_state is not None:
-            set_peft_model_state_dict(model, best_state.best_state)
-        model.save_pretrained(f"{output_dir}/checkpoint_best")
-        tokenizer.save_pretrained(f"{output_dir}/checkpoint_best")
+        run_name = f"{config.task}_{config.variant}_{backbone_id.replace('/', '__')}_{seed}"
+        tracker = RunTracker(config.wandb, run_name, run_config={"backbone": backbone_id, "seed": seed, "variant": config.variant})
+
+        # No per-epoch eval_strategy/load_best_model_at_end here, unlike this repo's other
+        # variants: score_labels_via_logits (many per-paragraph forward passes) doesn't fit
+        # the standard batch-forward compute_metrics interface. Instead, when save_best is
+        # true, an on_epoch_end callback runs that eval manually and tracks the best
+        # in-memory adapter state (see make_qlora_best_adapter_callback / _BestAdapterState)
+        # -- PEFT adapters are small enough to keep a full clone in memory across epochs.
+        save_best = config.training.save_best_checkpoint
+        best_state = _BestAdapterState()
+        args = TrainingArguments(
+            output_dir=output_dir,
+            num_train_epochs=config.training.epochs,
+            per_device_train_batch_size=config.training.per_device_batch_size,
+            gradient_accumulation_steps=config.training.gradient_accumulation_steps,
+            learning_rate=config.training.learning_rate,
+            weight_decay=config.training.weight_decay,
+            warmup_ratio=config.training.warmup_ratio,
+            save_strategy="no",
+            logging_steps=20,
+            remove_unused_columns=False,
+            fp16=torch.cuda.is_available(),
+            seed=seed,
+            report_to=[],
+        )
+        callbacks = [make_trainer_callback(tracker)] if config.wandb.enabled else []
+        if save_best:
+            callbacks.append(
+                make_qlora_best_adapter_callback(
+                    tokenizer, split.task1_val, config.model.max_seq_len, config.data.discourse_cues, best_state
+                )
+            )
+        trainer_cls = WeightedQLoRATrainer if class_balanced else Trainer
+        trainer = trainer_cls(
+            model=model, args=args, train_dataset=train_ds, data_collator=collator,
+            callbacks=callbacks or None,
+        )
+        install_rounded_logging(trainer)
+        trainer.train()
+
+        # PEFT adapter-only save (tens of MB), not a merged model (~14GB fp16) -- reload
+        # via PeftModel.from_pretrained(base_model, adapter_dir).
+        # model currently holds the final epoch's weights ("last").
+        model.save_pretrained(checkpoint_last_dir)
+        tokenizer.save_pretrained(checkpoint_last_dir)
+
+        if save_best:
+            from peft import set_peft_model_state_dict
+
+            # Fall back to the final epoch's state if no epoch ever beat float("-inf")
+            # (e.g. num_train_epochs=0 in a smoke test) -- best_state.best_state stays None.
+            if best_state.best_state is not None:
+                set_peft_model_state_dict(model, best_state.best_state)
+            model.save_pretrained(checkpoint_best_dir)
+            tokenizer.save_pretrained(checkpoint_best_dir)
+
+        tracker.finish()
 
     # Predictions (and therefore ensembling/threshold-sweep/submission) always come
     # from the best adapter when save_best is enabled, matching the encoder paths.
     model.eval()
-    val_probs = np.stack(
-        [score_labels_via_logits(r["text"], r["type"], model, tokenizer, config.model.max_seq_len, config.data.discourse_cues) for r in split.task1_val]
-    )
-    dev_probs = np.stack(
-        [score_labels_via_logits(r["text"], r["type"], model, tokenizer, config.model.max_seq_len, config.data.discourse_cues) for r in dev_in]
-    )
-
-    tracker.finish()
+    val_probs = score_rows(split.task1_val, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring val")
+    dev_probs = score_rows(dev_in, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring dev")
 
     del model, trainer
     gc.collect()

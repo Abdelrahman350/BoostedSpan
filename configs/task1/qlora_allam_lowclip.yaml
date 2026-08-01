@@ -1,0 +1,74 @@
+# Task 1 qlora_allam_lowclip: same class-balanced SFT weighting as
+# qlora_allam_weighted.yaml, but with a much gentler weight clip (3.0 instead of
+# 8.0) via model.class_balanced_sft_clip.
+#
+# Motivation: qlora_allam_weighted (clip=8.0, same as the encoder path) was fully
+# verified and came out WORSE than the unweighted baseline (Macro F1 0.7931 vs.
+# 0.8337) -- diagnosed via gold-vs-predicted label counts: TE and OT genuinely
+# improved, but CO/ST (5 val instances each) got MORE over-predicted, not less.
+# With Macro F1 weighting every label equally regardless of support, a couple of
+# extra false positives on the tiniest classes was enough to erase the gains
+# elsewhere. At clip=8.0, CO/ST's computed pos_weight both hit the 8.0 cap (their
+# real train-split imbalance ratio exceeds it) -- confirmed empirically that even
+# clip=3.0 still caps both (their imbalance is that extreme), so this is
+# specifically testing whether a SMALLER cap on the same two labels avoids the
+# single-example-dominates-a-gradient-step instability diagnosed in QLoRA's
+# per-example SFT weighting (unlike the encoder path's batched BCE, where 8.0
+# works fine). Baseline (qlora_allam.yaml) and the 8.0-clip run
+# (qlora_allam_weighted.yaml) both stay untouched for comparison.
+task: task1
+variant: qlora_allam
+backbones:
+  - humain-ai/ALLaM-7B-Instruct-preview
+seeds: [42]
+output_dir: outputs/task1_qlora_allam_lowclip
+
+tapt:
+  enabled: false
+
+model:
+  max_seq_len: 1024
+  gradient_checkpointing: true
+  class_balanced_sft: true
+  class_balanced_sft_clip: 3.0
+
+training:
+  epochs: 3
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 32
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 0
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_use_double_quant: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+ensembling:
+  enabled: false
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Left disabled, same reasoning as the other configs: this run only predicts on
+# dev_in.jsonl (practice/dev-phase set) -- the real submission is generated
+# separately via predict_eval.py against test_in.jsonl.
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: both

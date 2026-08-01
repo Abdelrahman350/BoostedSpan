@@ -28,7 +28,6 @@ import os
 import numpy as np
 import torch
 from datasets import Dataset
-from safetensors.torch import load_file
 from transformers import (
     AutoModelForCausalLM,
     AutoModelForSequenceClassification,
@@ -47,7 +46,7 @@ from models.span_scorer import SpanScorerModel, predict_span_scorer_paragraph
 from models.span_type_classifier import SpanTypeClassifier, predict_span_types
 from postprocessing.spans import postprocess_spans
 from train_task1 import RunResult, ensemble_and_score, tokenize_task1
-from train_task1_generative import score_labels_via_logits
+from train_task1_generative import score_rows
 from train_task2 import (
     ARG_BIO_TAGS,
     Task2RunResult,
@@ -56,6 +55,7 @@ from train_task2 import (
     predict_task2_paragraph,
     _write_and_score,
 )
+from utils.checkpointing import load_custom_state_dict
 from utils.config import Config, SpanScorerConfig, load_config
 
 
@@ -66,14 +66,6 @@ def resolve_base_checkpoint(backbone_id: str, config: Config, tapt_cache_dir: st
     if config.tapt.enabled:
         return f"{tapt_cache_dir}/{backbone_id.replace('/', '__')}"
     return backbone_id
-
-
-def load_custom_state_dict(model: torch.nn.Module, checkpoint_dir: str) -> torch.nn.Module:
-    st_path = os.path.join(checkpoint_dir, "model.safetensors")
-    bin_path = os.path.join(checkpoint_dir, "pytorch_model.bin")
-    state_dict = load_file(st_path) if os.path.exists(st_path) else torch.load(bin_path, map_location="cpu")
-    model.load_state_dict(state_dict, strict=True)
-    return model
 
 
 def _device() -> str:
@@ -135,12 +127,8 @@ def reload_qlora_run(backbone_id: str, seed: int, config: Config, split, test_ro
     model = PeftModel.from_pretrained(base_model, checkpoint_dir)
     model.eval()
 
-    val_probs = np.stack(
-        [score_labels_via_logits(r["text"], r["type"], model, tokenizer, config.model.max_seq_len, config.data.discourse_cues) for r in split.task1_val]
-    )
-    test_probs = np.stack(
-        [score_labels_via_logits(r["text"], r["type"], model, tokenizer, config.model.max_seq_len, config.data.discourse_cues) for r in test_rows]
-    )
+    val_probs = score_rows(split.task1_val, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring val")
+    test_probs = score_rows(test_rows, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring test")
 
     del model, base_model
     gc.collect()
