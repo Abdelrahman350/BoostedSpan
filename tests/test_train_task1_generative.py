@@ -19,6 +19,7 @@ from train_task1_generative import (
     build_generative_prompt,
     build_sft_example,
     score_labels_via_logits,
+    select_fewshot_exemplars,
 )
 
 
@@ -42,6 +43,72 @@ def test_build_generative_prompt_cues_disabled():
     text = "قال الخبير إن نسبة البطالة ارتفعت 5%"
     prompt = build_generative_prompt(text, "editorial", "ST", discourse_cues=False)
     assert "مؤشرات لغوية" not in prompt
+
+
+_FEWSHOT_ROWS = [
+    {"paragraph_id": 1, "text": "نص قصير يحتوي على شهادة منقولة", "type": "editorial", "labels": ["TE"]},
+    {"paragraph_id": 2, "text": "فقرة أطول بكثير تحتوي على شهادة منقولة أيضا مع تفاصيل إضافية كثيرة هنا", "type": "editorial", "labels": ["TE"]},
+    {"paragraph_id": 3, "text": "فقرة قصيرة فيها افتراض", "type": "debate", "labels": ["AS"]},
+    {"paragraph_id": 4, "text": "فقرة أخرى فيها افتراض وتفاصيل أطول من السابقة بكثير جدا", "type": "debate", "labels": ["AS"]},
+    {"paragraph_id": 5, "text": "فقرة بلا أي تصنيف حجاجي", "type": "debate", "labels": []},
+]
+
+
+def test_select_fewshot_exemplars_picks_shortest_positive():
+    exemplars = select_fewshot_exemplars(_FEWSHOT_ROWS, ["TE"])
+    assert exemplars["TE"]["positive"]["paragraph_id"] == 1  # shorter of the two TE rows
+
+
+def test_select_fewshot_exemplars_negative_prefers_as_rows_for_non_as_label():
+    exemplars = select_fewshot_exemplars(_FEWSHOT_ROWS, ["TE"])
+    # TE's hard negative should be an AS row (not the label-less row 5), shortest first
+    assert exemplars["TE"]["negative"]["paragraph_id"] == 3
+
+
+def test_select_fewshot_exemplars_as_negative_is_any_labeled_non_as_row():
+    exemplars = select_fewshot_exemplars(_FEWSHOT_ROWS, ["AS"])
+    assert exemplars["AS"]["positive"]["paragraph_id"] == 3  # shorter of the two AS rows
+    assert exemplars["AS"]["negative"]["paragraph_id"] == 1  # shortest non-AS but labeled row
+
+
+def test_select_fewshot_exemplars_missing_label_returns_none():
+    exemplars = select_fewshot_exemplars(_FEWSHOT_ROWS, ["CO"])
+    assert exemplars["CO"]["positive"] is None
+
+
+def test_build_generative_prompt_without_exemplars_uses_plain_descriptions():
+    prompt = build_generative_prompt("نص", "editorial", "TE", discourse_cues=False, exemplars=None)
+    assert "أمثلة توضيحية" not in prompt
+    assert "شهادة أو رأي منقول عن شخص أو مصدر آخر" in prompt  # plain LABEL_DESCRIPTIONS text
+
+
+def test_build_generative_prompt_with_exemplars_includes_demo_block():
+    exemplars = select_fewshot_exemplars(_FEWSHOT_ROWS, ["TE"])
+    prompt = build_generative_prompt("نص الاستعلام", "editorial", "TE", discourse_cues=False, exemplars=exemplars)
+
+    assert "أمثلة توضيحية" in prompt
+    assert "مثال إيجابي" in prompt
+    assert "مثال سلبي" in prompt
+    assert _FEWSHOT_ROWS[0]["text"] in prompt  # the chosen positive exemplar's text
+    assert _FEWSHOT_ROWS[2]["text"] in prompt  # the chosen negative exemplar's text
+    assert "نص الاستعلام" in prompt  # the actual query still present
+    # rich, contrastive description used instead of the plain one
+    assert "نقل كلام الغير" in prompt
+
+
+def test_build_generative_prompt_with_no_positive_exemplar_omits_positive_demo_only():
+    # CO has no positive example in the fixture, but AS-labeled rows still qualify
+    # as hard negatives -- a negative-only demo block is legitimate, not "missing".
+    exemplars = select_fewshot_exemplars(_FEWSHOT_ROWS, ["CO"])
+    prompt = build_generative_prompt("نص", "editorial", "CO", discourse_cues=False, exemplars=exemplars)
+    assert "مثال إيجابي" not in prompt
+    assert "مثال سلبي" in prompt
+
+
+def test_build_generative_prompt_with_exemplars_omits_demo_block_when_none_available():
+    exemplars = select_fewshot_exemplars([], LABELS)  # no training rows at all -> nothing to pick
+    prompt = build_generative_prompt("نص", "editorial", "CO", discourse_cues=False, exemplars=exemplars)
+    assert "أمثلة توضيحية" not in prompt
 
 
 class _FakeWordTokenizer:

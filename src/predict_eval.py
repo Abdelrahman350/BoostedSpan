@@ -46,7 +46,7 @@ from models.span_scorer import SpanScorerModel, predict_span_scorer_paragraph
 from models.span_type_classifier import SpanTypeClassifier, predict_span_types
 from postprocessing.spans import postprocess_spans
 from train_task1 import RunResult, ensemble_and_score, tokenize_task1
-from train_task1_generative import score_rows
+from train_task1_generative import score_rows, select_fewshot_exemplars
 from train_task2 import (
     ARG_BIO_TAGS,
     Task2RunResult,
@@ -127,8 +127,12 @@ def reload_qlora_run(backbone_id: str, seed: int, config: Config, split, test_ro
     model = PeftModel.from_pretrained(base_model, checkpoint_dir)
     model.eval()
 
-    val_probs = score_rows(split.task1_val, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring val")
-    test_probs = score_rows(test_rows, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring test")
+    # Same fixed exemplar set training would have computed (select_fewshot_exemplars
+    # is deterministic over split.task1_train, so recomputing it here reproduces the
+    # exact same demonstrations used at training time).
+    exemplars = select_fewshot_exemplars(split.task1_train, LABELS) if config.model.fewshot_prompt else None
+    val_probs = score_rows(split.task1_val, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring val", exemplars=exemplars)
+    test_probs = score_rows(test_rows, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring test", exemplars=exemplars)
 
     del model, base_model
     gc.collect()

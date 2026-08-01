@@ -1,0 +1,76 @@
+# Task 1 qlora_allam_fewshot: same QLoRA rank-classification pipeline as
+# qlora_allam.yaml, plus richer per-label prompting (model.fewshot_prompt, see
+# train_task1_generative.py's LABEL_DESCRIPTIONS_RICH / select_fewshot_exemplars).
+#
+# Motivation: qlora_allam's own per-label breakdown shows macro recall near
+# ceiling (0.927) but macro precision capped (0.763), worst on the semantically
+# fuzzy TE/OT/AN labels (precision 0.677/0.721/0.765) -- a discrimination
+# problem, not an imbalance problem. Confirmed the imbalance-loss angle is a dead
+# end first: both qlora_allam_weighted.yaml (clip=8.0, Macro F1 0.7931) and
+# qlora_allam_lowclip.yaml (clip=3.0, Macro F1 0.8141) underperformed this same
+# 0.8337 baseline. This instead adds, per label: (1) an explicitly contrastive
+# description of what NOT to confuse it with (e.g. TE = reported speech
+# attributed to a source, not the writer's own claim), and (2) one fixed
+# positive + one fixed hard-negative demonstration pulled deterministically from
+# the training split (closed-track compliant -- no external data, same
+# unlabeled-text-reuse spirit as TAPT). Baseline (qlora_allam.yaml) and both
+# clip variants stay untouched for comparison.
+#
+# max_seq_len raised 1024 -> 1536 to comfortably fit the added few-shot
+# demonstration pair (two short training paragraphs) without truncating the
+# actual instruction/answer part of longer queries.
+task: task1
+variant: qlora_allam
+backbones:
+  - humain-ai/ALLaM-7B-Instruct-preview
+seeds: [42]
+output_dir: outputs/task1_qlora_allam_fewshot
+
+tapt:
+  enabled: false
+
+model:
+  max_seq_len: 1536
+  gradient_checkpointing: true
+  fewshot_prompt: true
+
+training:
+  epochs: 3
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 32
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 0
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_use_double_quant: true
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+ensembling:
+  enabled: false
+  weighting: uniform
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Left disabled, same reasoning as the other configs: this run only predicts on
+# dev_in.jsonl (practice/dev-phase set) -- the real submission is generated
+# separately via predict_eval.py against test_in.jsonl.
+submission:
+  enabled: false
+  team_name: ""
+  training_setting: both

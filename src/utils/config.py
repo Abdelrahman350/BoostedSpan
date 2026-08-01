@@ -44,6 +44,13 @@ class ModelConfig:
     # (CO/ST, 5 val instances each) -- a single heavily-upweighted example can
     # dominate one gradient step there, unlike the encoder path's batched BCE.
     class_balanced_sft_clip: float = 8.0
+    # task1 qlora_allam-only: richer, explicitly contrastive per-label prompt
+    # descriptions (LABEL_DESCRIPTIONS_RICH) plus a fixed positive/hard-negative
+    # few-shot demonstration pair per label (train_task1_generative.py's
+    # select_fewshot_exemplars), targeting a diagnosed precision (not recall)
+    # bottleneck concentrated on the semantically fuzzy TE/OT/AN labels. Ignored
+    # everywhere else.
+    fewshot_prompt: bool = False
     # task2-specific (ignored for task1 configs)
     stride: int = 64
     use_crf: bool = False

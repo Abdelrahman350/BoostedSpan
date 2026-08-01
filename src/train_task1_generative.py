@@ -47,6 +47,36 @@ LABEL_DESCRIPTIONS: dict[str, str] = {
     "CO": "أرضية مشتركة أو حقيقة متفق عليها بين الطرفين",
     "OT": "نوع آخر من الحجج لا يندرج تحت الأنواع السابقة",
 }
+# Richer, explicitly contrastive descriptions -- used only when
+# config.model.fewshot_prompt is true (see build_generative_prompt). Motivation:
+# diagnosed that the plain (non-fewshot) qlora_allam baseline's error is
+# concentrated in precision, not recall (macro recall 0.927 vs. macro precision
+# 0.763), worst on TE/OT/AN specifically -- a discrimination problem (can't tell
+# "yes this type" from "sounds similar but isn't"), not an imbalance problem (the
+# class-balanced-loss experiments already ruled that out, both underperformed this
+# same baseline). These descriptions add the contrastive boundary each fuzzy label
+# needs against its most-confusable neighbor.
+LABEL_DESCRIPTIONS_RICH: dict[str, str] = {
+    "AS": (
+        "افتراض أو رأي شخصي يطرحه الكاتب من عنده دون الاستناد إلى مصدر خارجي منقول أو حادثة واقعية "
+        "محددة بتفاصيلها (يختلف عن 'شهادة منقولة' التي تُنسب صراحة لشخص آخر، وعن 'قصة شخصية' التي "
+        "ترد فيها تفاصيل حدث بعينه)"
+    ),
+    "AN": (
+        "قصة أو واقعة شخصية محددة وقعت فعليًا، تتضمن تفاصيل حدث أو زمان أو مكان "
+        "(وليست رأيًا عامًا أو افتراضًا مجردًا)"
+    ),
+    "ST": "إحصائية أو بيانات رقمية أو نسبة مئوية محددة",
+    "TE": (
+        "رأي أو معلومة منقولة صراحة عن شخص أو مصدر آخر بذكر القائل أو المصدر (نقل كلام الغير)، "
+        "وليست رأي الكاتب نفسه المطروح كافتراض"
+    ),
+    "CO": "أرضية مشتركة أو حقيقة متفق عليها بين طرفي النقاش",
+    "OT": (
+        "حجة واضحة لا تندرج تحت الأنواع الأخرى إطلاقًا؛ لا تخْتر هذا النوع إذا كانت الفقرة تحتمل "
+        "تصنيفها كافتراض شخصي (AS) أو أحد الأنواع الأخرى"
+    ),
+}
 CUE_DESCRIPTIONS: dict[str, str] = {
     "TE": "نقل كلام عن مصدر آخر",
     "ST": "أرقام أو إحصاءات",
@@ -54,12 +84,51 @@ CUE_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-def build_generative_prompt(text: str, domain: str, label: str, discourse_cues: bool = True) -> str:
+def select_fewshot_exemplars(rows: list[dict], labels: list[str]) -> dict[str, dict[str, dict | None]]:
+    """One positive + one hard-negative training-row exemplar per label, for
+    build_generative_prompt's fewshot_prompt mode. Deterministic (shortest
+    paragraph first, tie-broken by paragraph_id) -- no randomness, and drawn only
+    from `rows` (the training split), so this stays closed-track compliant the
+    same way TAPT's unlabeled-text use already is: no external data, no dev_in
+    labels touched.
+
+    Positive = shortest training paragraph that HAS the label (a clean, concise
+    demonstration). Hard negative = shortest training paragraph that does NOT
+    have the label, restricted to paragraphs that DO have "AS" when the target
+    label isn't AS (AS is the dominant/default-looking category and the one most
+    often confused with TE/AN/OT per the diagnosed precision gap -- see
+    LABEL_DESCRIPTIONS_RICH's docstring), or restricted to paragraphs WITHOUT any
+    label-set overlap with AS when the target label IS "AS" itself.
+    """
+    exemplars: dict[str, dict[str, dict | None]] = {}
+    for label in labels:
+        positives = sorted((r for r in rows if label in r["labels"]), key=lambda r: (len(r["text"]), r["paragraph_id"]))
+        if label == "AS":
+            neg_candidates = [r for r in rows if label not in r["labels"] and r["labels"]]
+        else:
+            neg_candidates = [r for r in rows if label not in r["labels"] and "AS" in r["labels"]]
+        negatives = sorted(neg_candidates, key=lambda r: (len(r["text"]), r["paragraph_id"]))
+        exemplars[label] = {
+            "positive": positives[0] if positives else None,
+            "negative": negatives[0] if negatives else None,
+        }
+    return exemplars
+
+
+def build_generative_prompt(
+    text: str, domain: str, label: str, discourse_cues: bool = True, exemplars: dict[str, dict] | None = None
+) -> str:
     """Natural-language instruction framing, not build_input_text's bracket-tag
     prefix -- an instruct-tuned chat model was never trained to interpret
     "[EDITORIAL]"/"[CUES:...]" tags the way an encoder's raw input can absorb them.
     Reuses CUE_PATTERNS as the same regex source of truth as text/cues.py, just
     rendered as a natural-language hint instead of a bracket tag.
+
+    `exemplars` (from select_fewshot_exemplars, only passed when
+    config.model.fewshot_prompt is true) switches to the more discriminative
+    LABEL_DESCRIPTIONS_RICH and prepends a positive/hard-negative demonstration
+    pair for this label before the actual query -- both fixed per label, not
+    recomputed per call.
     """
     domain_desc = "افتتاحية صحفية" if domain == "editorial" else "نقاش أو مناظرة"
     cue_note = ""
@@ -68,8 +137,23 @@ def build_generative_prompt(text: str, domain: str, label: str, discourse_cues: 
         if hits:
             hint = "، ".join(CUE_DESCRIPTIONS[h] for h in hits)
             cue_note = f" (تحتوي الفقرة على مؤشرات لغوية قد تدل على: {hint})"
-    label_desc = LABEL_DESCRIPTIONS[label]
+
+    fewshot_block = ""
+    if exemplars is not None:
+        label_desc = LABEL_DESCRIPTIONS_RICH[label]
+        pos, neg = exemplars.get(label, {}).get("positive"), exemplars.get(label, {}).get("negative")
+        demo_parts = []
+        if pos is not None:
+            demo_parts.append(f"مثال إيجابي:\n{pos['text']}\nهل يحتوي على {label_desc}؟\nالإجابة: نعم")
+        if neg is not None:
+            demo_parts.append(f"مثال سلبي:\n{neg['text']}\nهل يحتوي على {label_desc}؟\nالإجابة: لا")
+        if demo_parts:
+            fewshot_block = "أمثلة توضيحية:\n\n" + "\n\n".join(demo_parts) + "\n\n---\n\n"
+    else:
+        label_desc = LABEL_DESCRIPTIONS[label]
+
     return (
+        f"{fewshot_block}"
         f"فيما يلي فقرة من {domain_desc}:\n\n{text}\n\n"
         f"هل تحتوي هذه الفقرة على عنصر حجاجي من النوع التالي: {label_desc}؟{cue_note}\n"
         f"أجب بكلمة واحدة فقط: نعم أو لا.\n"
@@ -96,7 +180,8 @@ def build_sft_example(tokenizer, prompt: str, completion: str, max_len: int, wei
 
 
 def build_generative_sft_dataset(
-    tokenizer, rows: list[dict], max_len: int, discourse_cues: bool, class_balanced: bool = False, clip: float = 8.0
+    tokenizer, rows: list[dict], max_len: int, discourse_cues: bool, class_balanced: bool = False, clip: float = 8.0,
+    exemplars: dict[str, dict] | None = None,
 ) -> list[dict]:
     """One training example per (paragraph, label) pair -- completion is the gold
     yes/no answer token for that label, matching how score_labels_via_logits later
@@ -111,12 +196,17 @@ def build_generative_sft_dataset(
     `clip` (config.model.class_balanced_sft_clip) defaults to the encoder path's
     8.0 but is expected to need a gentler value here -- see that config field's
     docstring for why the encoder path's clip over-corrected on CO/ST.
+
+    `exemplars` (from select_fewshot_exemplars, only when config.model.fewshot_prompt
+    is true) is a FIXED dict reused identically for every row -- a training row that
+    happens to be its own label's exemplar will see itself as the demo; a disclosed,
+    accepted simplification (affects at most ~12 of ~520 rows), not engineered around.
     """
     pos_weight = weighted_bce_pos_weight(rows, LABELS, clip=clip) if class_balanced else None
     examples = []
     for r in rows:
         for i, label in enumerate(LABELS):
-            prompt = build_generative_prompt(r["text"], r["type"], label, discourse_cues)
+            prompt = build_generative_prompt(r["text"], r["type"], label, discourse_cues, exemplars=exemplars)
             is_yes = label in r["labels"]
             answer = " نعم" if is_yes else " لا"
             weight = float(pos_weight[i]) if (class_balanced and is_yes) else 1.0
@@ -164,7 +254,9 @@ def _yes_no_token_ids(tokenizer) -> tuple[int, int]:
 
 
 @torch.no_grad()
-def score_labels_via_logits(text: str, domain: str, model, tokenizer, max_len: int, discourse_cues: bool) -> np.ndarray:
+def score_labels_via_logits(
+    text: str, domain: str, model, tokenizer, max_len: int, discourse_cues: bool, exemplars: dict[str, dict] | None = None
+) -> np.ndarray:
     """Produces the (6,) P(yes)-per-label probability vector that
     train_task1.ensemble_and_score expects in place of a classification head's
     sigmoid output."""
@@ -172,7 +264,7 @@ def score_labels_via_logits(text: str, domain: str, model, tokenizer, max_len: i
     device = next(model.parameters()).device
     probs = []
     for label in LABELS:
-        prompt = build_generative_prompt(text, domain, label, discourse_cues)
+        prompt = build_generative_prompt(text, domain, label, discourse_cues, exemplars=exemplars)
         enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_len).to(device)
         out = model(**enc)
         last_logits = out.logits[0, -1]
@@ -181,7 +273,10 @@ def score_labels_via_logits(text: str, domain: str, model, tokenizer, max_len: i
     return np.array(probs)
 
 
-def score_rows(rows: list[dict], model, tokenizer, max_len: int, discourse_cues: bool, desc: str = "scoring") -> np.ndarray:
+def score_rows(
+    rows: list[dict], model, tokenizer, max_len: int, discourse_cues: bool, desc: str = "scoring",
+    exemplars: dict[str, dict] | None = None,
+) -> np.ndarray:
     """score_labels_via_logits over many rows, with a progress bar. Not cosmetic:
     each row needs len(LABELS)=6 separate forward passes with no natural batching
     (score_labels_via_logits probes one label at a time), so a few hundred rows can
@@ -189,7 +284,7 @@ def score_rows(rows: list[dict], model, tokenizer, max_len: int, discourse_cues:
     before and looked indistinguishable from a hang."""
     return np.stack(
         [
-            score_labels_via_logits(r["text"], r["type"], model, tokenizer, max_len, discourse_cues)
+            score_labels_via_logits(r["text"], r["type"], model, tokenizer, max_len, discourse_cues, exemplars=exemplars)
             for r in tqdm(rows, desc=desc)
         ]
     )
@@ -213,23 +308,28 @@ class _BestAdapterState:
         return False
 
 
-def _qlora_val_f1(model, tokenizer, val_rows: list[dict], max_len: int, discourse_cues: bool) -> float:
+def _qlora_val_f1(
+    model, tokenizer, val_rows: list[dict], max_len: int, discourse_cues: bool, exemplars: dict[str, dict] | None = None
+) -> float:
     """Per-epoch proxy for best-adapter selection: macro F1 at a fixed 0.5 threshold
     over score_labels_via_logits' P(yes) outputs -- same shape as
     train_task1.compute_task1_metrics, just computed outside Trainer's eval loop."""
-    val_probs = score_rows(val_rows, model, tokenizer, max_len, discourse_cues, desc="scoring val (per-epoch)")
+    val_probs = score_rows(val_rows, model, tokenizer, max_len, discourse_cues, desc="scoring val (per-epoch)", exemplars=exemplars)
     val_gold = np.array([[1.0 if l in r["labels"] else 0.0 for l in LABELS] for r in val_rows])
     return f1_score(val_gold, (val_probs > 0.5).astype(int), average="macro", zero_division=0)
 
 
-def make_qlora_best_adapter_callback(tokenizer, val_rows: list[dict], max_len: int, discourse_cues: bool, tracker: _BestAdapterState):
+def make_qlora_best_adapter_callback(
+    tokenizer, val_rows: list[dict], max_len: int, discourse_cues: bool, tracker: _BestAdapterState,
+    exemplars: dict[str, dict] | None = None,
+):
     from peft import get_peft_model_state_dict
     from transformers import TrainerCallback
 
     class _BestAdapterCallback(TrainerCallback):
         def on_epoch_end(self, args, state, control, model=None, **kwargs):
             model.eval()
-            f1 = _qlora_val_f1(model, tokenizer, val_rows, max_len, discourse_cues)
+            f1 = _qlora_val_f1(model, tokenizer, val_rows, max_len, discourse_cues, exemplars=exemplars)
             tracker.maybe_update(f1, get_peft_model_state_dict(model))
             model.train()
 
@@ -281,6 +381,10 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
     if quant_cfg is None or lora_cfg is None:
         raise ValueError("qlora_allam requires both `quantization:` and `lora:` blocks in the config.")
 
+    # Fixed per-label positive/hard-negative demonstration pair, reused identically
+    # across every row/epoch/reload -- see select_fewshot_exemplars's docstring.
+    exemplars = select_fewshot_exemplars(split.task1_train, LABELS) if config.model.fewshot_prompt else None
+
     from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
     bnb_config = BitsAndBytesConfig(
@@ -328,7 +432,7 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
         class_balanced = config.model.class_balanced_sft
         train_examples = build_generative_sft_dataset(
             tokenizer, split.task1_train, config.model.max_seq_len, config.data.discourse_cues,
-            class_balanced=class_balanced, clip=config.model.class_balanced_sft_clip,
+            class_balanced=class_balanced, clip=config.model.class_balanced_sft_clip, exemplars=exemplars,
         )
         train_ds = Dataset.from_list(train_examples)
         collator = make_generative_collate_fn(tokenizer, include_weight=class_balanced)
@@ -363,7 +467,8 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
         if save_best:
             callbacks.append(
                 make_qlora_best_adapter_callback(
-                    tokenizer, split.task1_val, config.model.max_seq_len, config.data.discourse_cues, best_state
+                    tokenizer, split.task1_val, config.model.max_seq_len, config.data.discourse_cues, best_state,
+                    exemplars=exemplars,
                 )
             )
         trainer_cls = WeightedQLoRATrainer if class_balanced else Trainer
@@ -395,8 +500,8 @@ def train_one_qlora_run(backbone_id: str, seed: int, config: Config, split, dev_
     # Predictions (and therefore ensembling/threshold-sweep/submission) always come
     # from the best adapter when save_best is enabled, matching the encoder paths.
     model.eval()
-    val_probs = score_rows(split.task1_val, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring val")
-    dev_probs = score_rows(dev_in, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring dev")
+    val_probs = score_rows(split.task1_val, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring val", exemplars=exemplars)
+    dev_probs = score_rows(dev_in, model, tokenizer, config.model.max_seq_len, config.data.discourse_cues, desc="scoring dev", exemplars=exemplars)
 
     del model, trainer
     gc.collect()
