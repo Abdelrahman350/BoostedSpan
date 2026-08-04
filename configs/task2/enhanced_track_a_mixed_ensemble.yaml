@@ -1,0 +1,98 @@
+# Task 2 enhanced_track_a_mixed_ensemble ("Tier B"): same recipe as
+# enhanced_track_a_large_ensemble.yaml (current #1 leaderboard result, eval
+# F1=0.752), but replaces 2 of its 4 same-architecture seeds with a genuinely
+# different backbone -- FacebookAI/xlm-roberta-large (different tokenizer,
+# different pretraining corpus/objective) -- instead of more redundancy of the
+# same architecture.
+#
+# Motivation: "Tier A" (4 seeds of aubmindlab/bert-large-arabertv02 alone) grew
+# false negatives (missed gold spans) even as it added redundancy -- 109 -> 123
+# -> 143 across three ensemble configs this session, now 32% of all gold spans --
+# because same-architecture runs share the same failure modes (correlated
+# errors), so more of them raises min_weight_fraction's effective bar without
+# adding independent evidence. A length-aware lenient decode threshold (tested
+# against these same 4 checkpoints) failed to recover this -- every
+# short_span_max_length/short_span_min_weight combination swept was worse than
+# the no-leniency baseline. Architecture diversity is the remaining untried
+# lever: XLM-RoBERTa-large's different tokenizer means its boundary-jitter noise
+# is *uncorrelated* with AraBERTv2-large's, so genuine agreement across the two
+# architectures should be stronger evidence than agreement among 4 near-identical
+# runs -- worth testing as its own hypothesis rather than assuming.
+#
+# Backbone reuse: aubmindlab/bert-large-arabertv02_seed42 and _seed123's
+# checkpoints are copied in from enhanced_track_a_large_ensemble's own output_dir
+# (outputs/task2_enhanced_track_a_mixed_ensemble/runs/aubmindlab__bert-large-arabertv02_seed{42,123}/checkpoint_best)
+# so train_task2's resumability check (checkpoint_best already on disk -> skip
+# training, reload + score only) reuses them as-is rather than retraining --
+# only the 2 new xlm-roberta-large seeds actually train. The original
+# enhanced_track_a_large_ensemble output_dir is left untouched so its own
+# 4-same-architecture result stays available for comparison.
+#
+# xlm-roberta-large needs a fresh TAPT run (not cached yet) -- run_tapt's
+# idempotent cache check under outputs/tapt_checkpoints/FacebookAI__xlm-roberta-large
+# handles this automatically, ~15-20 min for the ~612+217 unlabeled paragraphs.
+#
+# ensembling.min_weight_fraction/cross_label_iou carried over UNVERIFIED --
+# tuned for 4 near-equal-weight same-architecture runs, may not transfer to a
+# 2-architecture mix; re-sweep after training (same no-retrain-needed method
+# used for every decode-time knob this session) before trusting these values.
+task: task2
+variant: enhanced_track_a
+backbones:
+  - aubmindlab/bert-large-arabertv02
+  - FacebookAI/xlm-roberta-large
+seeds: [42, 123]
+output_dir: outputs/task2_enhanced_track_a_mixed_ensemble
+
+tapt:
+  enabled: true
+  epochs: 10
+  learning_rate: 5.0e-5
+  mlm_probability: 0.15
+
+model:
+  max_seq_len: 512
+  stride: 64
+  use_crf: true
+  gradient_checkpointing: true
+  use_aux_ce: true
+  aux_ce_weight: 0.3
+  aux_ce_clip: 20.0
+
+training:
+  epochs: 10
+  # per_device_batch_size dropped 2->1 (grad accumulation doubled 8->16 to keep
+  # the same effective batch size 16) after a real CUDA OOM: this GPU has 11.6GB
+  # total, not the 15GB T4 the original enhanced_track_a_large_ensemble sizing
+  # assumed, and xlm-roberta-large's much bigger vocab (250K vs AraBERTv2's
+  # ~64K) pushes its embedding/logits memory well above AraBERTv2-large's at the
+  # same batch size. Only affects the 2 new xlm-roberta-large seeds in practice
+  # -- the 2 reused AraBERTv2-large checkpoints are already trained and skipped.
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 16
+  learning_rate: 3.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  save_best_checkpoint: true
+
+data:
+  discourse_cues: true
+  jitter_augment: 2
+
+ensembling:
+  enabled: true
+  weighting: internal_f1
+  decode_strategy: cluster
+  min_weight_fraction: 0.8
+  cross_label_iou: 0.5
+
+wandb:
+  enabled: true
+  project: sanad-argmining
+
+# Left disabled, same reasoning as the other configs: the real submission is
+# generated separately via predict_eval.py against test_in.jsonl.
+submission:
+  enabled: false
+  team_name: Nu_Analytics
+  training_setting: both

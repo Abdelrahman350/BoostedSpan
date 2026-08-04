@@ -111,7 +111,8 @@ def ensemble_decode_spans(
 
 
 def cluster_ensemble_decode_spans(
-    all_runs_spans: list[list[dict]], min_weight: float, weights: list[float], cross_label_iou: float = 0.3
+    all_runs_spans: list[list[dict]], min_weight: float, weights: list[float], cross_label_iou: float = 0.3,
+    short_span_max_length: int | None = None, short_span_min_weight: float | None = None,
 ) -> list[dict]:
     """Span-level alternative to ensemble_decode_spans's per-character majority
     vote, fixing a real failure mode diagnosed against enhanced_track_a_weighted:
@@ -134,6 +135,19 @@ def cluster_ensemble_decode_spans(
     different-label clusters afterward, since char-voting no longer does that for
     free. Empirically (val sweep against enhanced_track_a_weighted's checkpoints):
     F1 0.730 vs. char-voting's 0.706, with precision/recall much more balanced.
+
+    `short_span_max_length`/`short_span_min_weight` (both None by default --
+    exact original single-threshold behavior otherwise): when a cluster's own
+    length is <= short_span_max_length, it's accepted against short_span_min_weight
+    instead of min_weight. Motivation: the SAME short-span-loss mechanism this
+    function was built to fix persisted (and got worse) as more independent runs
+    were added to push min_weight's near-unanimous bar higher for precision --
+    false negatives climbed from 109 (4-run char-vote) to 123 (2-run cluster) to
+    143 (4-run cluster, 32% of all gold spans) across three separate ensemble
+    configs this session, even as precision kept improving. A single global
+    threshold can't be both strict enough for long spans' precision and lenient
+    enough for short spans' recall -- this makes that tradeoff length-conditional
+    instead of forcing one number to serve both.
     """
     candidates: list[tuple[int, int, str, int]] = []
     for run_idx, spans in enumerate(all_runs_spans):
@@ -160,9 +174,12 @@ def cluster_ensemble_decode_spans(
                 members.append(items[j])
                 j += 1
             total_weight = sum(weights[r] for r in member_runs)
-            if total_weight >= min_weight:
-                start = min(m[0] for m in members)
-                end = max(m[1] for m in members)
+            start = min(m[0] for m in members)
+            end = max(m[1] for m in members)
+            threshold = min_weight
+            if short_span_max_length is not None and short_span_min_weight is not None and (end - start) <= short_span_max_length:
+                threshold = short_span_min_weight
+            if total_weight >= threshold:
                 clusters.append((label, start, end, total_weight))
             i = j
 

@@ -82,6 +82,43 @@ def test_cluster_decode_cross_label_low_iou_keeps_both():
     assert {(s["label"], s["start_offset"], s["end_offset"]) for s in result} == {("AS", 0, 20), ("OT", 18, 30)}
 
 
+def test_cluster_decode_short_span_threshold_defaults_off():
+    # short_span_max_length/short_span_min_weight both default to None -- exact
+    # original single-threshold behavior, a low-weight short cluster still dropped.
+    run0 = [{"label": "AS", "start_offset": 0, "end_offset": 10}]
+    result = cluster_ensemble_decode_spans([run0], min_weight=2.0, weights=[1.0])
+    assert result == []
+
+
+def test_cluster_decode_short_span_lenient_threshold_recovers_short_cluster():
+    # Same single-run, weight-1.0 cluster as above, now with a lenient short-span
+    # threshold (max_length=15, min_weight=0.5) -- the 10-char cluster qualifies as
+    # "short" and is accepted against 0.5, not the strict global min_weight=2.0.
+    run0 = [{"label": "AS", "start_offset": 0, "end_offset": 10}]
+    result = cluster_ensemble_decode_spans(
+        [run0], min_weight=2.0, weights=[1.0], short_span_max_length=15, short_span_min_weight=0.5
+    )
+    assert result == [{"label": "AS", "start_offset": 0, "end_offset": 10}]
+
+
+def test_cluster_decode_short_span_threshold_does_not_affect_long_clusters():
+    # A cluster longer than short_span_max_length still uses the strict global
+    # min_weight, even when the lenient short-span params are set.
+    run0 = [{"label": "AS", "start_offset": 0, "end_offset": 100}]  # 100 chars, not "short"
+    result = cluster_ensemble_decode_spans(
+        [run0], min_weight=2.0, weights=[1.0], short_span_max_length=15, short_span_min_weight=0.5
+    )
+    assert result == []
+
+
+def test_cluster_decode_short_span_boundary_is_inclusive():
+    run0 = [{"label": "AS", "start_offset": 0, "end_offset": 15}]  # exactly 15 chars
+    result = cluster_ensemble_decode_spans(
+        [run0], min_weight=2.0, weights=[1.0], short_span_max_length=15, short_span_min_weight=0.5
+    )
+    assert result == [{"label": "AS", "start_offset": 0, "end_offset": 15}]
+
+
 def test_min_weight_for_fraction_default_matches_prior_strict_majority():
     # fraction=0.5 (EnsemblingConfig's default) must reproduce the old hardcoded
     # `sum(weights) / 2` exactly -- a no-op change for every existing config.
