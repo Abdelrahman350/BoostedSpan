@@ -139,6 +139,17 @@ find . -name __pycache__ -not -path "./.venv/*" -exec rm -rf {} +
 rm -rf .pytest_cache
 ```
 
+## Additional documentation
+
+The branch-specific methodology for `src/task1_qwen_35.py` is documented in:
+
+- `docs/methodology_task1_qwen35.md` — detailed design rationale, data handling,
+  prompt formatting, LoRA configuration, training/evaluation workflow, and
+  output expectations for the Task 1 Qwen3.5-9B branch.
+
+This file is part of the same `task1_qwen35` branch and complements the
+`README.md` description with a focused implementation-level reference.
+
 ## Notes
 
 `variant` in each config determines behavior purely through config flags
