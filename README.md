@@ -243,3 +243,25 @@ against the real 7B model and the yes/no token-id assumption in
 `score_labels_via_logits` both still need verification against the real
 `ALLaM-7B-Instruct-preview` tokenizer/weights** before trusting results — see the
 docstrings in `train_task1_generative.py` for the exact open risks.
+
+### Running the branch-local Task 1 script
+
+This repo now includes `src/task1_qwen_35.py` on the `task1_qwen35` branch.
+Run it from the repo root using the current branch and the same Python environment:
+
+```bash
+cd /tmp/BoostedSpan_clone
+python3 -c "from src.task1_qwen_35 import main; main()"
+```
+
+If you prefer a direct script invocation after adding the missing module entrypoint,
+append `if __name__ == '__main__': main()` to the bottom of `src/task1_qwen_35.py`,
+then run:
+
+```bash
+cd /tmp/BoostedSpan_clone
+python3 src/task1_qwen_35.py --data-dir data --experiment-dir outputs/task1_qwen35
+```
+
+The script expects the `data/` directory to contain `train_task_1.jsonl` and
+`dev_task_1_ref.jsonl`.
