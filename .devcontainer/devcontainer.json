@@ -7,10 +7,11 @@
   "workspaceFolder": "/home/mount/Repositories/${localWorkspaceFolderBasename}",
   "mounts": [
     "source=${localWorkspaceFolder}/../../,target=/home/mount,type=bind,consistency=cached",
-    "source=${localWorkspaceFolder}/../../.claude-code-state-${localWorkspaceFolderBasename},target=/home/abdelrahman/.claude,type=bind,consistency=cached",
-    "source=${localWorkspaceFolder}/../../.uv-cache-${localWorkspaceFolderBasename},target=/home/abdelrahman/.local/share/uv,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/../../CLAUDE/${localWorkspaceFolderBasename}/.claude,target=/home/abdelrahman/.claude,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/../../UV/${localWorkspaceFolderBasename}/data,target=/home/abdelrahman/.local/share/uv,type=bind,consistency=cached",
+    "source=${localWorkspaceFolder}/../../UV/cache,target=/home/abdelrahman/.cache/uv,type=bind,consistency=cached"
   ],
-  "initializeCommand": "mkdir -p ${localWorkspaceFolder}/../../.claude-code-state-${localWorkspaceFolderBasename} && mkdir -p ${localWorkspaceFolder}/../../.uv-cache-${localWorkspaceFolderBasename}",
+  "initializeCommand": "mkdir -p ${localWorkspaceFolder}/../../CLAUDE/${localWorkspaceFolderBasename}/.claude && mkdir -p ${localWorkspaceFolder}/../../UV/${localWorkspaceFolderBasename}/data && mkdir -p ${localWorkspaceFolder}/../../UV/cache",
   "shutdownAction": "stopContainer",
   "containerUser": "abdelrahman",
   "remoteUser": "abdelrahman",
